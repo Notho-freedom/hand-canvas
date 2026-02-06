@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
 import type { HandData } from '@/types/madox';
-import { PINCH_THRESHOLD, PINCH_RELEASE_THRESHOLD } from '@/types/madox';
+import { PINCH_THRESHOLD, PINCH_RELEASE_THRESHOLD, SMOOTHING_FACTOR } from '@/types/madox';
 
 export function useHandTracking() {
   const [hands, setHands] = useState<HandData[]>([]);
@@ -20,15 +20,15 @@ export function useHandTracking() {
   const UI_UPDATE_RATE = 50; // ms - limiter les updates React
   const USE_GPU = false; // TEST: passer à CPU si problèmes
 
-  const lastTimestampRef = useRef<number>(performance.now());
-  const filterStateRef = useRef<Array<{
-    filtered: { x: number; y: number; z: number }[];
-    derivative: { x: number; y: number; z: number }[];
-  }>>([]);
+  const smoothValue = useCallback((current: number, previous: number, factor: number) => {
+    return previous + (current - previous) * factor;
+  }, []);
 
-  const oneEuroAlpha = useCallback((cutoff: number, dt: number) => {
-    const tau = 1 / (2 * Math.PI * cutoff);
-    return 1 / (1 + tau / dt);
+  const getSmoothingFactor = useCallback((distance: number) => {
+    const minFactor = SMOOTHING_FACTOR;
+    const maxFactor = 0.6;
+    const normalizedDistance = Math.min(distance / 0.15, 1);
+    return minFactor + (maxFactor - minFactor) * normalizedDistance;
   }, []);
 
   const applyOneEuro = useCallback(
@@ -222,18 +222,19 @@ export function useHandTracking() {
               }
 
               const prev = handsRef.current[i] ?? prevHandsRef.current[i];
-              if (!filterStateRef.current[i]) {
-                filterStateRef.current[i] = { filtered: [], derivative: [] };
-              }
-              const filterState = filterStateRef.current[i];
               const smoothedLandmarks = landmarks.map((landmark, index) => {
                 const current = { x: 1 - landmark.x, y: landmark.y, z: landmark.z };
-                const prevFiltered = filterState.filtered[index] ?? prev?.landmarks?.[index] ?? current;
-                const prevDerivative = filterState.derivative[index] ?? { x: 0, y: 0, z: 0 };
-                const { filtered, derivative } = applyOneEuro(current, prevFiltered, prevDerivative, dt);
-                filterState.filtered[index] = filtered;
-                filterState.derivative[index] = derivative;
-                return filtered;
+                const previous = prev?.landmarks?.[index];
+                if (!previous) {
+                  return current;
+                }
+                const distance = Math.hypot(current.x - previous.x, current.y - previous.y);
+                const factor = getSmoothingFactor(distance);
+                return {
+                  x: smoothValue(current.x, previous.x, factor),
+                  y: smoothValue(current.y, previous.y, factor),
+                  z: smoothValue(current.z, previous.z, factor),
+                };
               });
 
               const smoothedIndex = smoothedLandmarks[8];
@@ -302,7 +303,7 @@ export function useHandTracking() {
         handLandmarkerRef.current = null;
       }
     };
-  }, [applyOneEuro, USE_GPU]);
+  }, [smoothValue, getSmoothingFactor, USE_GPU]);
 
   return { 
     hands, 
