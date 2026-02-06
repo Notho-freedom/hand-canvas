@@ -1,12 +1,42 @@
-// Update this page (the content is just a fallback if you fail to update the page)
+import { useCallback, useRef } from 'react';
+import { useHandTracking } from '@/hooks/useHandTracking';
+import { useObjectManager } from '@/hooks/useObjectManager';
+import MadoxCanvas from '@/components/MadoxCanvas';
+import MadoxHUD from '@/components/MadoxHUD';
+import type { HandData } from '@/types/madox';
 
 const Index = () => {
+  const { hands, isLoading, error, setHands } = useHandTracking();
+  const { addObject, clearAll, getObjects, updateObjects } = useObjectManager();
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  const handleAddObject = useCallback(() => {
+    addObject(window.innerWidth, window.innerHeight);
+  }, [addObject]);
+
+  const handleHandsUpdate = useCallback(
+    (updatedHands: HandData[]) => {
+      setHands(updatedHands);
+    },
+    [setHands]
+  );
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background">
-      <div className="text-center">
-        <h1 className="mb-4 text-4xl font-bold">Welcome to Your Blank App</h1>
-        <p className="text-xl text-muted-foreground">Start building your amazing project here!</p>
-      </div>
+    <div className="relative w-screen h-screen overflow-hidden">
+      <MadoxCanvas
+        hands={hands}
+        getObjects={getObjects}
+        updateObjects={updateObjects}
+        onHandsUpdate={handleHandsUpdate}
+      />
+      <MadoxHUD
+        isLoading={isLoading}
+        error={error}
+        objectCount={getObjects().length}
+        handCount={hands.length}
+        onAddObject={handleAddObject}
+        onClearAll={clearAll}
+      />
     </div>
   );
 };
