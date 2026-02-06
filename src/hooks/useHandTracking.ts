@@ -58,9 +58,16 @@ export function useHandTracking() {
         document.body.appendChild(video);
         videoRef.current = video;
 
-        await new Promise<void>((resolve) => {
-          video.onloadeddata = () => resolve();
+        await new Promise<void>((resolve, reject) => {
+          video.onloadedmetadata = () => resolve();
+          video.onerror = () => reject(new Error('Failed to load camera stream'));
         });
+
+        try {
+          await video.play();
+        } catch (playError) {
+          throw new Error('Camera playback was blocked. Please allow autoplay or interact with the page.');
+        }
 
         setIsLoading(false);
         startDetection();
