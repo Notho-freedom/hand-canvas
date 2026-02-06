@@ -31,6 +31,42 @@ export function useHandTracking() {
     return minFactor + (maxFactor - minFactor) * normalizedDistance;
   }, []);
 
+  const applyOneEuro = useCallback(
+    (
+      current: { x: number; y: number; z: number },
+      prevFiltered: { x: number; y: number; z: number },
+      prevDerivative: { x: number; y: number; z: number },
+      dt: number
+    ) => {
+      const minCutoff = 1.2;
+      const beta = 0.9;
+      const dCutoff = 1.0;
+
+      const dx = (current.x - prevFiltered.x) / dt;
+      const dy = (current.y - prevFiltered.y) / dt;
+      const dz = (current.z - prevFiltered.z) / dt;
+      const alphaD = oneEuroAlpha(dCutoff, dt);
+      const filteredDerivative = {
+        x: prevDerivative.x + alphaD * (dx - prevDerivative.x),
+        y: prevDerivative.y + alphaD * (dy - prevDerivative.y),
+        z: prevDerivative.z + alphaD * (dz - prevDerivative.z),
+      };
+      const speed = Math.hypot(filteredDerivative.x, filteredDerivative.y, filteredDerivative.z);
+      const cutoff = minCutoff + beta * speed;
+      const alpha = oneEuroAlpha(cutoff, dt);
+
+      return {
+        filtered: {
+          x: prevFiltered.x + alpha * (current.x - prevFiltered.x),
+          y: prevFiltered.y + alpha * (current.y - prevFiltered.y),
+          z: prevFiltered.z + alpha * (current.z - prevFiltered.z),
+        },
+        derivative: filteredDerivative,
+      };
+    },
+    [oneEuroAlpha]
+  );
+
   useEffect(() => {
     let cancelled = false;
     let lastUpdate = 0;
@@ -163,6 +199,9 @@ export function useHandTracking() {
         // CRITIQUE: Vérifier que la vidéo a avancé
         if (video.readyState >= 2 && video.currentTime > 0) {
           try {
+            const now = performance.now();
+            const dt = Math.max((now - lastTimestampRef.current) / 1000, 1 / 120);
+            lastTimestampRef.current = now;
             const result = handLandmarkerRef.current.detectForVideo(
               video, 
               performance.now()
@@ -223,7 +262,6 @@ export function useHandTracking() {
             prevHandsRef.current = newHands;
 
             // Mettre à jour React seulement toutes les X ms
-            const now = performance.now();
             if (now - lastUpdate > UI_UPDATE_RATE) {
               setHands([...newHands]);
               lastUpdate = now;
