@@ -7,6 +7,7 @@ interface MadoxCanvasProps {
   getObjects: () => MadoxObject[];
   updateObjects: (updater: (objs: MadoxObject[]) => MadoxObject[]) => void;
   onHandsUpdate: (hands: HandData[]) => void;
+  handsRef: React.MutableRefObject<HandData[]>;
 }
 
 // Hand skeleton connections (MediaPipe indices)
@@ -19,9 +20,19 @@ const HAND_CONNECTIONS = [
   [5, 9], [9, 13], [13, 17],            // palm
 ];
 
-export default function MadoxCanvas({ hands, getObjects, updateObjects, onHandsUpdate }: MadoxCanvasProps) {
+export default function MadoxCanvas({ 
+  hands, 
+  getObjects, 
+  updateObjects, 
+  onHandsUpdate, 
+  handsRef 
+}: MadoxCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fpsRef = useRef({ frames: 0, lastTime: performance.now(), fps: 0 });
+  
+  // Réf pour éviter les mises à jour en cascade
+  const lastUpdateRef = useRef<number>(0);
+  const UPDATE_INTERVAL = 1000 / 30; // 30 FPS max pour les updates React
 
   const render = useCallback(() => {
     const canvas = canvasRef.current;
@@ -56,7 +67,9 @@ export default function MadoxCanvas({ hands, getObjects, updateObjects, onHandsU
     const objects = getObjects();
 
     // -- Interaction logic: pinch grab/release
-    const updatedHands = [...hands];
+    // Utilise handsRef.current pour les calculs temps réel
+    const currentHands = handsRef.current;
+    const updatedHands = [...currentHands];
     const newObjects = objects.map(obj => ({ ...obj }));
 
     updatedHands.forEach((hand, handIdx) => {
@@ -129,8 +142,18 @@ export default function MadoxCanvas({ hands, getObjects, updateObjects, onHandsU
       }
     }
 
+    // Mettre à jour les objets
     updateObjects(() => newObjects);
-    onHandsUpdate(updatedHands);
+    
+    // Mettre à jour la ref des mains immédiatement (temps réel)
+    handsRef.current = updatedHands;
+    
+    // Mettre à jour l'état React seulement toutes les X ms pour éviter le flood
+    const now = performance.now();
+    if (onHandsUpdate && now - lastUpdateRef.current > UPDATE_INTERVAL) {
+      onHandsUpdate(updatedHands);
+      lastUpdateRef.current = now;
+    }
 
     // -- Draw objects
     for (const obj of newObjects) {
@@ -138,7 +161,7 @@ export default function MadoxCanvas({ hands, getObjects, updateObjects, onHandsU
 
       // Find if any hand is close (highlight)
       let isNear = false;
-      for (const hand of hands) {
+      for (const hand of currentHands) {
         const hx = hand.indexTip.x * W;
         const hy = hand.indexTip.y * H;
         const dx = hx - obj.x;
@@ -182,7 +205,11 @@ export default function MadoxCanvas({ hands, getObjects, updateObjects, onHandsU
     }
 
     // -- Draw hands
-    for (const hand of hands) {
+    // Pour le rendu, utilise `hands` (état React) ou `currentHands` (ref)
+    // selon que tu veux la précision temps réel ou la version lissée React
+    const handsToRender = currentHands; // Pour temps réel
+    
+    for (const hand of handsToRender) {
       const landmarks = hand.landmarks;
 
       // Draw connections
@@ -231,11 +258,11 @@ export default function MadoxCanvas({ hands, getObjects, updateObjects, onHandsU
 
     // -- FPS counter
     fpsRef.current.frames++;
-    const now = performance.now();
-    if (now - fpsRef.current.lastTime >= 1000) {
+    const nowTime = performance.now();
+    if (nowTime - fpsRef.current.lastTime >= 1000) {
       fpsRef.current.fps = fpsRef.current.frames;
       fpsRef.current.frames = 0;
-      fpsRef.current.lastTime = now;
+      fpsRef.current.lastTime = nowTime;
     }
 
     ctx.fillStyle = 'hsla(0, 0%, 60%, 0.6)';
@@ -243,8 +270,8 @@ export default function MadoxCanvas({ hands, getObjects, updateObjects, onHandsU
     ctx.textAlign = 'right';
     ctx.fillText(`${fpsRef.current.fps} FPS`, W - 16, 24);
     ctx.fillText(`${newObjects.length} objects`, W - 16, 40);
-    ctx.fillText(`${hands.length} hand${hands.length !== 1 ? 's' : ''}`, W - 16, 56);
-  }, [hands, getObjects, updateObjects, onHandsUpdate]);
+    ctx.fillText(`${handsToRender.length} hand${handsToRender.length !== 1 ? 's' : ''}`, W - 16, 56);
+  }, [getObjects, updateObjects, onHandsUpdate, handsRef]);
 
   // Resize canvas & render loop
   useEffect(() => {
