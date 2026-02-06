@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
 import type { HandData } from '@/types/madox';
-import { PINCH_THRESHOLD, SMOOTHING_FACTOR } from '@/types/madox';
+import { PINCH_THRESHOLD, PINCH_RELEASE_THRESHOLD, SMOOTHING_FACTOR } from '@/types/madox';
 
 export function useHandTracking() {
   const [hands, setHands] = useState<HandData[]>([]);
@@ -20,8 +20,15 @@ export function useHandTracking() {
   const UI_UPDATE_RATE = 50; // ms - limiter les updates React
   const USE_GPU = false; // TEST: passer à CPU si problèmes
 
-  const smoothValue = useCallback((current: number, previous: number) => {
-    return previous + (current - previous) * SMOOTHING_FACTOR;
+  const smoothValue = useCallback((current: number, previous: number, factor: number) => {
+    return previous + (current - previous) * factor;
+  }, []);
+
+  const getSmoothingFactor = useCallback((distance: number) => {
+    const minFactor = SMOOTHING_FACTOR;
+    const maxFactor = 0.6;
+    const normalizedDistance = Math.min(distance / 0.15, 1);
+    return minFactor + (maxFactor - minFactor) * normalizedDistance;
   }, []);
 
   useEffect(() => {
@@ -164,7 +171,7 @@ export function useHandTracking() {
             const newHands: HandData[] = (result.landmarks || []).map((landmarks, i) => {
               if (!landmarks || landmarks.length < 21) {
                 // Retourner main vide si données incomplètes
-                const prev = prevHandsRef.current[i];
+                const prev = handsRef.current[i] ?? prevHandsRef.current[i];
                 return prev || {
                   landmarks: [],
                   indexTip: { x: 0, y: 0 },
@@ -175,37 +182,38 @@ export function useHandTracking() {
                 };
               }
 
-              const indexTip = landmarks[8];
-              const thumbTip = landmarks[4];
-              const dx = indexTip.x - thumbTip.x;
-              const dy = indexTip.y - thumbTip.y;
-              const pinchDistance = Math.sqrt(dx * dx + dy * dy);
+              const prev = handsRef.current[i] ?? prevHandsRef.current[i];
+              const smoothedLandmarks = landmarks.map((landmark, index) => {
+                const current = { x: 1 - landmark.x, y: landmark.y, z: landmark.z };
+                const previous = prev?.landmarks?.[index];
+                if (!previous) {
+                  return current;
+                }
+                const distance = Math.hypot(current.x - previous.x, current.y - previous.y);
+                const factor = getSmoothingFactor(distance);
+                return {
+                  x: smoothValue(current.x, previous.x, factor),
+                  y: smoothValue(current.y, previous.y, factor),
+                  z: smoothValue(current.z, previous.z, factor),
+                };
+              });
 
-              const prev = prevHandsRef.current[i];
-              const smoothedIndex = prev
-                ? { 
-                    x: smoothValue(1 - indexTip.x, prev.indexTip.x), 
-                    y: smoothValue(indexTip.y, prev.indexTip.y) 
-                  }
-                : { x: 1 - indexTip.x, y: indexTip.y };
-              
-              const smoothedThumb = prev
-                ? { 
-                    x: smoothValue(1 - thumbTip.x, prev.thumbTip.x), 
-                    y: smoothValue(thumbTip.y, prev.thumbTip.y) 
-                  }
-                : { x: 1 - thumbTip.x, y: thumbTip.y };
+              const smoothedIndex = smoothedLandmarks[8];
+              const smoothedThumb = smoothedLandmarks[4];
+              const dx = smoothedIndex.x - smoothedThumb.x;
+              const dy = smoothedIndex.y - smoothedThumb.y;
+              const pinchDistance = Math.hypot(dx, dy);
+              const wasPinching = prev?.isPinching ?? false;
+              const isPinching = wasPinching
+                ? pinchDistance < PINCH_RELEASE_THRESHOLD
+                : pinchDistance < PINCH_THRESHOLD;
 
               return {
-                landmarks: landmarks.map(l => ({ 
-                  x: 1 - l.x, // Mirror for user perspective
-                  y: l.y, 
-                  z: l.z 
-                })),
+                landmarks: smoothedLandmarks,
                 indexTip: smoothedIndex,
                 thumbTip: smoothedThumb,
                 pinchDistance,
-                isPinching: pinchDistance < PINCH_THRESHOLD,
+                isPinching,
                 grabbedObjectId: prev?.grabbedObjectId ?? null,
               };
             });
@@ -257,7 +265,7 @@ export function useHandTracking() {
         handLandmarkerRef.current = null;
       }
     };
-  }, [smoothValue, USE_GPU]);
+  }, [smoothValue, getSmoothingFactor, USE_GPU]);
 
   return { 
     hands, 
