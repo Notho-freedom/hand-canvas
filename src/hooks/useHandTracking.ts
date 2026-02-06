@@ -28,23 +28,40 @@ export function useHandTracking() {
           'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'
         );
 
-        const handLandmarker = await HandLandmarker.createFromOptions(vision, {
-          baseOptions: {
-            modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
-            delegate: 'GPU',
-          },
-          runningMode: 'VIDEO',
-          numHands: 2,
-          minHandDetectionConfidence: 0.5,
-          minHandPresenceConfidence: 0.5,
-          minTrackingConfidence: 0.5,
-        });
+        const modelAssetPath =
+          'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
+        let handLandmarker: HandLandmarker;
+        try {
+          handLandmarker = await HandLandmarker.createFromOptions(vision, {
+            baseOptions: {
+              modelAssetPath,
+              delegate: 'GPU',
+            },
+            runningMode: 'VIDEO',
+            numHands: 2,
+            minHandDetectionConfidence: 0.35,
+            minHandPresenceConfidence: 0.35,
+            minTrackingConfidence: 0.35,
+          });
+        } catch (gpuError) {
+          handLandmarker = await HandLandmarker.createFromOptions(vision, {
+            baseOptions: {
+              modelAssetPath,
+              delegate: 'CPU',
+            },
+            runningMode: 'VIDEO',
+            numHands: 2,
+            minHandDetectionConfidence: 0.35,
+            minHandPresenceConfidence: 0.35,
+            minTrackingConfidence: 0.35,
+          });
+        }
 
         if (cancelled) return;
         handLandmarkerRef.current = handLandmarker;
 
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { width: 1280, height: 720, facingMode: 'user' },
+          video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
         });
 
         if (cancelled) {
@@ -57,7 +74,17 @@ export function useHandTracking() {
         video.autoplay = true;
         video.playsInline = true;
         video.muted = true;
-        video.style.display = 'none';
+        const [track] = stream.getVideoTracks();
+        const settings = track?.getSettings();
+        video.width = settings?.width ?? 1280;
+        video.height = settings?.height ?? 720;
+        video.style.position = 'fixed';
+        video.style.opacity = '0';
+        video.style.pointerEvents = 'none';
+        video.style.width = `${video.width}px`;
+        video.style.height = `${video.height}px`;
+        video.style.top = '0';
+        video.style.left = '-9999px';
         document.body.appendChild(video);
         videoRef.current = video;
 
