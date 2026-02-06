@@ -10,7 +10,10 @@ export function useHandTracking() {
   const handLandmarkerRef = useRef<HandLandmarker | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const animFrameRef = useRef<number>(0);
+  const videoFrameRef = useRef<number | null>(null);
   const prevHandsRef = useRef<HandData[]>([]);
+  const lastVideoTimeRef = useRef<number>(-1);
+  const staleFrameCountRef = useRef<number>(0);
 
   const smoothValue = useCallback((current: number, previous: number) => {
     return previous + (current - previous) * SMOOTHING_FACTOR;
@@ -25,23 +28,40 @@ export function useHandTracking() {
           'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'
         );
 
-        const handLandmarker = await HandLandmarker.createFromOptions(vision, {
-          baseOptions: {
-            modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
-            delegate: 'GPU',
-          },
-          runningMode: 'VIDEO',
-          numHands: 2,
-          minHandDetectionConfidence: 0.5,
-          minHandPresenceConfidence: 0.5,
-          minTrackingConfidence: 0.5,
-        });
+        const modelAssetPath =
+          'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
+        let handLandmarker: HandLandmarker;
+        try {
+          handLandmarker = await HandLandmarker.createFromOptions(vision, {
+            baseOptions: {
+              modelAssetPath,
+              delegate: 'GPU',
+            },
+            runningMode: 'VIDEO',
+            numHands: 2,
+            minHandDetectionConfidence: 0.35,
+            minHandPresenceConfidence: 0.35,
+            minTrackingConfidence: 0.35,
+          });
+        } catch (gpuError) {
+          handLandmarker = await HandLandmarker.createFromOptions(vision, {
+            baseOptions: {
+              modelAssetPath,
+              delegate: 'CPU',
+            },
+            runningMode: 'VIDEO',
+            numHands: 2,
+            minHandDetectionConfidence: 0.35,
+            minHandPresenceConfidence: 0.35,
+            minTrackingConfidence: 0.35,
+          });
+        }
 
         if (cancelled) return;
         handLandmarkerRef.current = handLandmarker;
 
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { width: 1280, height: 720, facingMode: 'user' },
+          video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
         });
 
         if (cancelled) {
@@ -54,13 +74,30 @@ export function useHandTracking() {
         video.autoplay = true;
         video.playsInline = true;
         video.muted = true;
-        video.style.display = 'none';
+        const [track] = stream.getVideoTracks();
+        const settings = track?.getSettings();
+        video.width = settings?.width ?? 1280;
+        video.height = settings?.height ?? 720;
+        video.style.position = 'fixed';
+        video.style.opacity = '0';
+        video.style.pointerEvents = 'none';
+        video.style.width = `${video.width}px`;
+        video.style.height = `${video.height}px`;
+        video.style.top = '0';
+        video.style.left = '-9999px';
         document.body.appendChild(video);
         videoRef.current = video;
 
-        await new Promise<void>((resolve) => {
-          video.onloadeddata = () => resolve();
+        await new Promise<void>((resolve, reject) => {
+          video.onloadedmetadata = () => resolve();
+          video.onerror = () => reject(new Error('Failed to load camera stream'));
         });
+
+        try {
+          await video.play();
+        } catch (playError) {
+          throw new Error('Camera playback was blocked. Please allow autoplay or interact with the page.');
+        }
 
         setIsLoading(false);
         startDetection();
@@ -73,46 +110,79 @@ export function useHandTracking() {
     }
 
     function startDetection() {
+      const scheduleNext = () => {
+        const video = videoRef.current;
+        if (!video) return;
+
+        if ('requestVideoFrameCallback' in video) {
+          const videoWithCallback = video as HTMLVideoElement & {
+            requestVideoFrameCallback?: (callback: () => void) => number;
+          };
+          videoFrameRef.current = videoWithCallback.requestVideoFrameCallback?.(() => {
+            detect();
+          }) ?? null;
+        } else {
+          animFrameRef.current = requestAnimationFrame(detect);
+        }
+      };
+
       const detect = () => {
         if (cancelled || !handLandmarkerRef.current || !videoRef.current) return;
 
         const video = videoRef.current;
         if (video.readyState >= 2) {
-          const result = handLandmarkerRef.current.detectForVideo(video, performance.now());
+          if (video.paused || video.ended) {
+            video.play().catch(() => null);
+          }
 
-          const newHands: HandData[] = (result.landmarks || []).map((landmarks, i) => {
-            const indexTip = landmarks[8];
-            const thumbTip = landmarks[4];
-            const dx = indexTip.x - thumbTip.x;
-            const dy = indexTip.y - thumbTip.y;
-            const pinchDistance = Math.sqrt(dx * dx + dy * dy);
+          if (video.currentTime !== lastVideoTimeRef.current) {
+            lastVideoTimeRef.current = video.currentTime;
+            staleFrameCountRef.current = 0;
+            const result = handLandmarkerRef.current.detectForVideo(
+              video,
+              video.currentTime * 1000
+            );
 
-            const prev = prevHandsRef.current[i];
-            const smoothedIndex = prev
-              ? { x: smoothValue(1 - indexTip.x, prev.indexTip.x), y: smoothValue(indexTip.y, prev.indexTip.y) }
-              : { x: 1 - indexTip.x, y: indexTip.y };
-            const smoothedThumb = prev
-              ? { x: smoothValue(1 - thumbTip.x, prev.thumbTip.x), y: smoothValue(thumbTip.y, prev.thumbTip.y) }
-              : { x: 1 - thumbTip.x, y: thumbTip.y };
+            const newHands: HandData[] = (result.landmarks || []).map((landmarks, i) => {
+              const indexTip = landmarks[8];
+              const thumbTip = landmarks[4];
+              const dx = indexTip.x - thumbTip.x;
+              const dy = indexTip.y - thumbTip.y;
+              const pinchDistance = Math.sqrt(dx * dx + dy * dy);
 
-            return {
-              landmarks: landmarks.map(l => ({ x: 1 - l.x, y: l.y, z: l.z })),
-              indexTip: smoothedIndex,
-              thumbTip: smoothedThumb,
-              pinchDistance,
-              isPinching: pinchDistance < PINCH_THRESHOLD,
-              grabbedObjectId: prev?.grabbedObjectId ?? null,
-            };
-          });
+              const prev = prevHandsRef.current[i];
+              const smoothedIndex = prev
+                ? { x: smoothValue(1 - indexTip.x, prev.indexTip.x), y: smoothValue(indexTip.y, prev.indexTip.y) }
+                : { x: 1 - indexTip.x, y: indexTip.y };
+              const smoothedThumb = prev
+                ? { x: smoothValue(1 - thumbTip.x, prev.thumbTip.x), y: smoothValue(thumbTip.y, prev.thumbTip.y) }
+                : { x: 1 - thumbTip.x, y: thumbTip.y };
 
-          prevHandsRef.current = newHands;
-          setHands(newHands);
+              return {
+                landmarks: landmarks.map(l => ({ x: 1 - l.x, y: l.y, z: l.z })),
+                indexTip: smoothedIndex,
+                thumbTip: smoothedThumb,
+                pinchDistance,
+                isPinching: pinchDistance < PINCH_THRESHOLD,
+                grabbedObjectId: prev?.grabbedObjectId ?? null,
+              };
+            });
+
+            prevHandsRef.current = newHands;
+            setHands(newHands);
+          } else {
+            staleFrameCountRef.current += 1;
+            if (staleFrameCountRef.current > 30) {
+              staleFrameCountRef.current = 0;
+              video.play().catch(() => null);
+            }
+          }
         }
 
-        animFrameRef.current = requestAnimationFrame(detect);
+        scheduleNext();
       };
 
-      animFrameRef.current = requestAnimationFrame(detect);
+      scheduleNext();
     }
 
     init();
@@ -120,6 +190,9 @@ export function useHandTracking() {
     return () => {
       cancelled = true;
       cancelAnimationFrame(animFrameRef.current);
+      if (videoFrameRef.current !== null && videoRef.current?.cancelVideoFrameCallback) {
+        videoRef.current.cancelVideoFrameCallback(videoFrameRef.current);
+      }
       if (videoRef.current) {
         const stream = videoRef.current.srcObject as MediaStream;
         stream?.getTracks().forEach(t => t.stop());
