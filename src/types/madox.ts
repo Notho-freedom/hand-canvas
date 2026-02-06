@@ -29,6 +29,7 @@ export const NEON_COLORS = [
   { fill: 'hsl(330, 100%, 60%)', glow: 'hsla(330, 100%, 60%, 0.6)' },   // pink
 ];
 
-export const PINCH_THRESHOLD = 0.06;
+export const PINCH_THRESHOLD = 0.08;
+export const PINCH_RELEASE_THRESHOLD = 0.1;
 export const GRAB_RADIUS = 60;
 export const SMOOTHING_FACTOR = 0.35;

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
 import type { HandData } from '@/types/madox';
-import { PINCH_THRESHOLD, SMOOTHING_FACTOR } from '@/types/madox';
+import { PINCH_THRESHOLD, PINCH_RELEASE_THRESHOLD } from '@/types/madox';
 
 export function useHandTracking() {
   const [hands, setHands] = useState<HandData[]>([]);
@@ -20,9 +20,52 @@ export function useHandTracking() {
   const UI_UPDATE_RATE = 50; // ms - limiter les updates React
   const USE_GPU = false; // TEST: passer à CPU si problèmes
 
-  const smoothValue = useCallback((current: number, previous: number) => {
-    return previous + (current - previous) * SMOOTHING_FACTOR;
+  const lastTimestampRef = useRef<number>(performance.now());
+  const filterStateRef = useRef<Array<{
+    filtered: { x: number; y: number; z: number }[];
+    derivative: { x: number; y: number; z: number }[];
+  }>>([]);
+
+  const oneEuroAlpha = useCallback((cutoff: number, dt: number) => {
+    const tau = 1 / (2 * Math.PI * cutoff);
+    return 1 / (1 + tau / dt);
   }, []);
+
+  const applyOneEuro = useCallback(
+    (
+      current: { x: number; y: number; z: number },
+      prevFiltered: { x: number; y: number; z: number },
+      prevDerivative: { x: number; y: number; z: number },
+      dt: number
+    ) => {
+      const minCutoff = 1.2;
+      const beta = 0.9;
+      const dCutoff = 1.0;
+
+      const dx = (current.x - prevFiltered.x) / dt;
+      const dy = (current.y - prevFiltered.y) / dt;
+      const dz = (current.z - prevFiltered.z) / dt;
+      const alphaD = oneEuroAlpha(dCutoff, dt);
+      const filteredDerivative = {
+        x: prevDerivative.x + alphaD * (dx - prevDerivative.x),
+        y: prevDerivative.y + alphaD * (dy - prevDerivative.y),
+        z: prevDerivative.z + alphaD * (dz - prevDerivative.z),
+      };
+      const speed = Math.hypot(filteredDerivative.x, filteredDerivative.y, filteredDerivative.z);
+      const cutoff = minCutoff + beta * speed;
+      const alpha = oneEuroAlpha(cutoff, dt);
+
+      return {
+        filtered: {
+          x: prevFiltered.x + alpha * (current.x - prevFiltered.x),
+          y: prevFiltered.y + alpha * (current.y - prevFiltered.y),
+          z: prevFiltered.z + alpha * (current.z - prevFiltered.z),
+        },
+        derivative: filteredDerivative,
+      };
+    },
+    [oneEuroAlpha]
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -156,6 +199,9 @@ export function useHandTracking() {
         // CRITIQUE: Vérifier que la vidéo a avancé
         if (video.readyState >= 2 && video.currentTime > 0) {
           try {
+            const now = performance.now();
+            const dt = Math.max((now - lastTimestampRef.current) / 1000, 1 / 120);
+            lastTimestampRef.current = now;
             const result = handLandmarkerRef.current.detectForVideo(
               video, 
               performance.now()
@@ -164,7 +210,7 @@ export function useHandTracking() {
             const newHands: HandData[] = (result.landmarks || []).map((landmarks, i) => {
               if (!landmarks || landmarks.length < 21) {
                 // Retourner main vide si données incomplètes
-                const prev = prevHandsRef.current[i];
+                const prev = handsRef.current[i] ?? prevHandsRef.current[i];
                 return prev || {
                   landmarks: [],
                   indexTip: { x: 0, y: 0 },
@@ -175,37 +221,37 @@ export function useHandTracking() {
                 };
               }
 
-              const indexTip = landmarks[8];
-              const thumbTip = landmarks[4];
-              const dx = indexTip.x - thumbTip.x;
-              const dy = indexTip.y - thumbTip.y;
-              const pinchDistance = Math.sqrt(dx * dx + dy * dy);
+              const prev = handsRef.current[i] ?? prevHandsRef.current[i];
+              if (!filterStateRef.current[i]) {
+                filterStateRef.current[i] = { filtered: [], derivative: [] };
+              }
+              const filterState = filterStateRef.current[i];
+              const smoothedLandmarks = landmarks.map((landmark, index) => {
+                const current = { x: 1 - landmark.x, y: landmark.y, z: landmark.z };
+                const prevFiltered = filterState.filtered[index] ?? prev?.landmarks?.[index] ?? current;
+                const prevDerivative = filterState.derivative[index] ?? { x: 0, y: 0, z: 0 };
+                const { filtered, derivative } = applyOneEuro(current, prevFiltered, prevDerivative, dt);
+                filterState.filtered[index] = filtered;
+                filterState.derivative[index] = derivative;
+                return filtered;
+              });
 
-              const prev = prevHandsRef.current[i];
-              const smoothedIndex = prev
-                ? { 
-                    x: smoothValue(1 - indexTip.x, prev.indexTip.x), 
-                    y: smoothValue(indexTip.y, prev.indexTip.y) 
-                  }
-                : { x: 1 - indexTip.x, y: indexTip.y };
-              
-              const smoothedThumb = prev
-                ? { 
-                    x: smoothValue(1 - thumbTip.x, prev.thumbTip.x), 
-                    y: smoothValue(thumbTip.y, prev.thumbTip.y) 
-                  }
-                : { x: 1 - thumbTip.x, y: thumbTip.y };
+              const smoothedIndex = smoothedLandmarks[8];
+              const smoothedThumb = smoothedLandmarks[4];
+              const dx = smoothedIndex.x - smoothedThumb.x;
+              const dy = smoothedIndex.y - smoothedThumb.y;
+              const pinchDistance = Math.hypot(dx, dy);
+              const wasPinching = prev?.isPinching ?? false;
+              const isPinching = wasPinching
+                ? pinchDistance < PINCH_RELEASE_THRESHOLD
+                : pinchDistance < PINCH_THRESHOLD;
 
               return {
-                landmarks: landmarks.map(l => ({ 
-                  x: 1 - l.x, // Mirror for user perspective
-                  y: l.y, 
-                  z: l.z 
-                })),
+                landmarks: smoothedLandmarks,
                 indexTip: smoothedIndex,
                 thumbTip: smoothedThumb,
                 pinchDistance,
-                isPinching: pinchDistance < PINCH_THRESHOLD,
+                isPinching,
                 grabbedObjectId: prev?.grabbedObjectId ?? null,
               };
             });
@@ -215,7 +261,6 @@ export function useHandTracking() {
             prevHandsRef.current = newHands;
 
             // Mettre à jour React seulement toutes les X ms
-            const now = performance.now();
             if (now - lastUpdate > UI_UPDATE_RATE) {
               setHands([...newHands]);
               lastUpdate = now;
@@ -257,7 +302,7 @@ export function useHandTracking() {
         handLandmarkerRef.current = null;
       }
     };
-  }, [smoothValue, USE_GPU]);
+  }, [applyOneEuro, USE_GPU]);
 
   return { 
     hands, 
