@@ -1,4 +1,4 @@
-import { useRef, useEffect, useCallback } from 'react';
+import { useRef, useEffect, useCallback, useState } from 'react';
 import type { HandData, MadoxObject } from '@/types/madox';
 import { GRAB_RADIUS } from '@/types/madox';
 
@@ -10,14 +10,13 @@ interface MadoxCanvasProps {
   handsRef: React.MutableRefObject<HandData[]>;
 }
 
-// Hand skeleton connections (MediaPipe indices)
 const HAND_CONNECTIONS = [
-  [0, 1], [1, 2], [2, 3], [3, 4],       // thumb
-  [0, 5], [5, 6], [6, 7], [7, 8],       // index
-  [0, 9], [9, 10], [10, 11], [11, 12],  // middle
-  [0, 13], [13, 14], [14, 15], [15, 16],// ring
-  [0, 17], [17, 18], [18, 19], [19, 20],// pinky
-  [5, 9], [9, 13], [13, 17],            // palm
+  [0, 1], [1, 2], [2, 3], [3, 4],
+  [0, 5], [5, 6], [6, 7], [7, 8],
+  [0, 9], [9, 10], [10, 11], [11, 12],
+  [0, 13], [13, 14], [14, 15], [15, 16],
+  [0, 17], [17, 18], [18, 19], [19, 20],
+  [5, 9], [9, 13], [13, 17],
 ];
 
 export default function MadoxCanvas({ 
@@ -29,10 +28,14 @@ export default function MadoxCanvas({
 }: MadoxCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fpsRef = useRef({ frames: 0, lastTime: performance.now(), fps: 0 });
-  
-  // Réf pour éviter les mises à jour en cascade
   const lastUpdateRef = useRef<number>(0);
-  const UPDATE_INTERVAL = 1000 / 30; // 30 FPS max pour les updates React
+  const UPDATE_INTERVAL = 1000 / 30;
+  
+  // État pour le debug
+  const [debugInfo, setDebugInfo] = useState<{
+    handPos: {x: number, y: number} | null;
+    nearestObj: {x: number, y: number, dist: number} | null;
+  }>({ handPos: null, nearestObj: null });
 
   const render = useCallback(() => {
     const canvas = canvasRef.current;
@@ -43,7 +46,7 @@ export default function MadoxCanvas({
     const W = canvas.width;
     const H = canvas.height;
 
-    // -- Background with subtle grid
+    // Clear
     ctx.fillStyle = 'hsl(240, 15%, 3%)';
     ctx.fillRect(0, 0, W, H);
 
@@ -65,16 +68,22 @@ export default function MadoxCanvas({
     }
 
     const objects = getObjects();
-
-    // -- Interaction logic: pinch grab/release
-    // Utilise handsRef.current pour les calculs temps réel
     const currentHands = handsRef.current;
     const updatedHands = [...currentHands];
     const newObjects = objects.map(obj => ({ ...obj }));
 
+    let debugHandPos: {x: number, y: number} | null = null;
+    let debugNearestObj: {x: number, y: number, dist: number} | null = null;
+
+    // INTERACTION LOGIC
     updatedHands.forEach((hand, handIdx) => {
+      // IMPORTANT: Les coordonnées sont déjà normalisées (0-1) et mirroirées dans le hook
       const hx = hand.indexTip.x * W;
       const hy = hand.indexTip.y * H;
+      
+      if (handIdx === 0) {
+        debugHandPos = { x: hx, y: hy };
+      }
 
       if (hand.isPinching) {
         // Already grabbing?
@@ -92,20 +101,28 @@ export default function MadoxCanvas({
           // Try to grab nearest object
           let nearest: MadoxObject | null = null;
           let minDist = GRAB_RADIUS;
+          
           for (const obj of newObjects) {
             if (obj.grabbed) continue;
             const dx = hx - obj.x;
             const dy = hy - obj.y;
             const dist = Math.sqrt(dx * dx + dy * dy);
+            
             if (dist < minDist) {
               minDist = dist;
               nearest = obj;
+              
+              if (handIdx === 0) {
+                debugNearestObj = { x: obj.x, y: obj.y, dist };
+              }
             }
           }
+          
           if (nearest) {
             nearest.grabbed = true;
             nearest.grabbedByHand = handIdx;
             updatedHands[handIdx] = { ...hand, grabbedObjectId: nearest.id };
+            console.log(`✨ GRABBED! Hand ${handIdx} grabbed object ${nearest.id}`);
           }
         }
       } else {
@@ -115,14 +132,19 @@ export default function MadoxCanvas({
           if (obj) {
             obj.grabbed = false;
             obj.grabbedByHand = null;
-            // Keep velocity for inertia
+            console.log(`🔄 RELEASED! Hand ${handIdx} released object ${obj.id}`);
           }
           updatedHands[handIdx] = { ...hand, grabbedObjectId: null };
         }
       }
     });
 
-    // Physics: apply friction to free objects
+    // Mettre à jour le debug info
+    if (debugHandPos) {
+      setDebugInfo({ handPos: debugHandPos, nearestObj: debugNearestObj });
+    }
+
+    // PHYSICS
     for (const obj of newObjects) {
       if (!obj.grabbed) {
         obj.x += obj.vx;
@@ -136,26 +158,22 @@ export default function MadoxCanvas({
         if (obj.y - obj.radius < 0) { obj.y = obj.radius; obj.vy = Math.abs(obj.vy) * 0.5; }
         if (obj.y + obj.radius > H) { obj.y = H - obj.radius; obj.vy = -Math.abs(obj.vy) * 0.5; }
 
-        // Stop if very slow
         if (Math.abs(obj.vx) < 0.1) obj.vx = 0;
         if (Math.abs(obj.vy) < 0.1) obj.vy = 0;
       }
     }
 
-    // Mettre à jour les objets
+    // UPDATE STATE
     updateObjects(() => newObjects);
-    
-    // Mettre à jour la ref des mains immédiatement (temps réel)
     handsRef.current = updatedHands;
     
-    // Mettre à jour l'état React seulement toutes les X ms pour éviter le flood
     const now = performance.now();
     if (onHandsUpdate && now - lastUpdateRef.current > UPDATE_INTERVAL) {
       onHandsUpdate(updatedHands);
       lastUpdateRef.current = now;
     }
 
-    // -- Draw objects
+    // DRAW OBJECTS
     for (const obj of newObjects) {
       ctx.save();
 
@@ -166,13 +184,13 @@ export default function MadoxCanvas({
         const hy = hand.indexTip.y * H;
         const dx = hx - obj.x;
         const dy = hy - obj.y;
-        if (Math.sqrt(dx * dx + dy * dy) < GRAB_RADIUS) {
+        if (Math.sqrt(dx * dx + dy * dy) < GRAB_RADIUS * 1.5) {
           isNear = true;
           break;
         }
       }
 
-      // Glow effect
+      // Glow
       const glowRadius = obj.grabbed ? obj.radius * 2.5 : isNear ? obj.radius * 2 : obj.radius * 1.5;
       const gradient = ctx.createRadialGradient(obj.x, obj.y, 0, obj.x, obj.y, glowRadius);
       gradient.addColorStop(0, obj.glowColor);
@@ -204,15 +222,20 @@ export default function MadoxCanvas({
       ctx.restore();
     }
 
-    // -- Draw hands
-    // Pour le rendu, utilise `hands` (état React) ou `currentHands` (ref)
-    // selon que tu veux la précision temps réel ou la version lissée React
-    const handsToRender = currentHands; // Pour temps réel
-    
-    for (const hand of handsToRender) {
+    // DEBUG: Draw grab radius and connections
+    for (const hand of currentHands) {
+      const hx = hand.indexTip.x * W;
+      const hy = hand.indexTip.y * H;
+      
+      // Grab radius circle (jaune)
+      ctx.beginPath();
+      ctx.arc(hx, hy, GRAB_RADIUS, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(255, 255, 0, 0.3)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      
+      // Main hand skeleton
       const landmarks = hand.landmarks;
-
-      // Draw connections
       ctx.strokeStyle = 'hsla(180, 100%, 50%, 0.3)';
       ctx.lineWidth = 1.5;
       for (const [a, b] of HAND_CONNECTIONS) {
@@ -222,7 +245,7 @@ export default function MadoxCanvas({
         ctx.stroke();
       }
 
-      // Draw landmark points
+      // Landmark points
       for (let i = 0; i < landmarks.length; i++) {
         const lx = landmarks[i].x * W;
         const ly = landmarks[i].y * H;
@@ -237,7 +260,7 @@ export default function MadoxCanvas({
         ctx.shadowBlur = 0;
       }
 
-      // Pinch indicator between thumb and index
+      // Pinch indicator
       const tx = hand.thumbTip.x * W;
       const ty = hand.thumbTip.y * H;
       const ix = hand.indexTip.x * W;
@@ -254,9 +277,23 @@ export default function MadoxCanvas({
       ctx.shadowColor = hand.isPinching ? 'hsl(300, 100%, 60%)' : 'hsl(180, 100%, 50%)';
       ctx.stroke();
       ctx.shadowBlur = 0;
+      
+      // Red dot at index tip (for precise position)
+      ctx.beginPath();
+      ctx.arc(hx, hy, 6, 0, Math.PI * 2);
+      ctx.fillStyle = hand.isPinching ? 'rgba(255, 0, 255, 0.8)' : 'rgba(255, 0, 0, 0.8)';
+      ctx.fill();
+      
+      // Distance to nearest object text
+      if (debugNearestObj) {
+        ctx.fillStyle = 'white';
+        ctx.font = '14px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(`${Math.round(debugNearestObj.dist)}px`, hx, hy - 25);
+      }
     }
 
-    // -- FPS counter
+    // FPS counter with debug info
     fpsRef.current.frames++;
     const nowTime = performance.now();
     if (nowTime - fpsRef.current.lastTime >= 1000) {
@@ -265,15 +302,23 @@ export default function MadoxCanvas({
       fpsRef.current.lastTime = nowTime;
     }
 
-    ctx.fillStyle = 'hsla(0, 0%, 60%, 0.6)';
-    ctx.font = '12px monospace';
+    ctx.fillStyle = 'hsla(0, 0%, 80%, 0.8)';
+    ctx.font = '14px monospace';
     ctx.textAlign = 'right';
-    ctx.fillText(`${fpsRef.current.fps} FPS`, W - 16, 24);
-    ctx.fillText(`${newObjects.length} objects`, W - 16, 40);
-    ctx.fillText(`${handsToRender.length} hand${handsToRender.length !== 1 ? 's' : ''}`, W - 16, 56);
+    ctx.fillText(`${fpsRef.current.fps} FPS`, W - 20, 30);
+    ctx.fillText(`${newObjects.length} objects`, W - 20, 50);
+    ctx.fillText(`${currentHands.length} hand${currentHands.length !== 1 ? 's' : ''}`, W - 20, 70);
+    
+    // Debug info
+    if (debugInfo.handPos) {
+      ctx.textAlign = 'left';
+      ctx.fillText(`Hand: (${Math.round(debugInfo.handPos.x)}, ${Math.round(debugInfo.handPos.y)})`, 20, 30);
+      if (debugInfo.nearestObj) {
+        ctx.fillText(`Nearest: ${Math.round(debugInfo.nearestObj.dist)}px`, 20, 50);
+      }
+    }
   }, [getObjects, updateObjects, onHandsUpdate, handsRef]);
 
-  // Resize canvas & render loop
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -299,10 +344,29 @@ export default function MadoxCanvas({
   }, [render]);
 
   return (
-    <canvas
-      ref={canvasRef}
-      className="fixed inset-0 w-full h-full"
-      style={{ touchAction: 'none' }}
-    />
+    <>
+      <canvas
+        ref={canvasRef}
+        className="fixed inset-0 w-full h-full"
+        style={{ touchAction: 'none' }}
+      />
+      {/* Overlay debug */}
+      <div className="fixed top-4 left-4 bg-black/70 text-white p-3 rounded text-sm font-mono">
+        <div>Debug Info:</div>
+        {debugInfo.handPos && (
+          <>
+            <div>Hand: ({Math.round(debugInfo.handPos.x)}, {Math.round(debugInfo.handPos.y)})</div>
+            {debugInfo.nearestObj && (
+              <div>Distance: {Math.round(debugInfo.nearestObj.dist)}px</div>
+            )}
+          </>
+        )}
+        <div className="mt-2 text-xs">
+          <div>• Cercle jaune = zone de grab ({GRAB_RADIUS}px)</div>
+          <div>• Point rouge = position index</div>
+          <div>• Cercle magenta = pinch détecté</div>
+        </div>
+      </div>
+    </>
   );
 }
