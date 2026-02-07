@@ -1,62 +1,63 @@
-import { useCallback, useRef, useState, useEffect } from 'react';
+import { useCallback, useState, useEffect } from 'react';
 import { useHandTracking } from '@/hooks/useHandTracking';
-import { useObjectManager } from '@/hooks/useObjectManager';
+import { useWidgetManager } from '@/hooks/useWidgetManager';
+import { useHandInteraction } from '@/hooks/useHandInteraction';
 import MadoxCanvas from '@/components/MadoxCanvas';
+import MadoxWidgetRenderer from '@/components/MadoxWidgetRenderer';
 import MadoxHUD from '@/components/MadoxHUD';
-import type { HandData } from '@/types/madox';
+import type { HandData, WidgetType } from '@/types/madox';
 
 const Index = () => {
-  const { hands, isLoading, error, handsRef } = useHandTracking(); // Récupère handsRef au lieu de setHands
-  const { addObject, clearAll, getObjects, updateObjects } = useObjectManager();
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  
-  // État local pour synchroniser les mains avec l'UI si besoin
-  const [localHands, setLocalHands] = useState<HandData[]>(hands);
+  const { hands, isLoading, error, handsRef } = useHandTracking();
+  const { addWidget, removeWidget, clearAll, getWidgets, updateWidgets } = useWidgetManager();
+  const { processInteractions } = useHandInteraction();
 
-  // Synchroniser les mains du hook avec l'état local
+  const [localHands, setLocalHands] = useState<HandData[]>(hands);
+  const [widgetSnapshot, setWidgetSnapshot] = useState(getWidgets());
+
   useEffect(() => {
     setLocalHands(hands);
   }, [hands]);
 
-  const handleAddObject = useCallback(() => {
-    addObject(window.innerWidth, window.innerHeight);
-  }, [addObject]);
+  // Sync widget snapshot for React rendering at a reasonable rate
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setWidgetSnapshot([...getWidgets()]);
+    }, 1000 / 30);
+    return () => clearInterval(interval);
+  }, [getWidgets]);
+
+  const handleAddWidget = useCallback((type: WidgetType) => {
+    addWidget(type);
+  }, [addWidget]);
 
   const handleHandsUpdate = useCallback(
     (updatedHands: HandData[]) => {
-      // Utilise la ref pour les mises à jour en temps réel
-      if (handsRef.current) {
-        handsRef.current = updatedHands;
-      }
-      // Si tu as besoin de déclencher un render, utilise l'état local
-      // Mais attention : ça peut ralentir les performances
-      // setLocalHands(updatedHands);
+      handsRef.current = updatedHands;
     },
     [handsRef]
   );
 
-  // Fonction pour forcer une mise à jour si nécessaire
-  const forceUpdateHands = useCallback(() => {
-    if (handsRef.current) {
-      setLocalHands([...handsRef.current]);
-    }
-  }, [handsRef]);
-
   return (
     <div className="relative w-screen h-screen overflow-hidden">
       <MadoxCanvas
-        hands={localHands} // Utilise les mains locales
-        getObjects={getObjects}
-        updateObjects={updateObjects}
+        handsRef={handsRef}
+        getWidgets={getWidgets}
+        updateWidgets={updateWidgets}
         onHandsUpdate={handleHandsUpdate}
-        handsRef={handsRef} // Passe la ref au canvas pour accès direct
+        processInteractions={processInteractions}
+      />
+      <MadoxWidgetRenderer
+        widgets={widgetSnapshot}
+        handCount={localHands.length}
+        onRemoveWidget={removeWidget}
       />
       <MadoxHUD
         isLoading={isLoading}
         error={error}
-        objectCount={getObjects().length}
-        handCount={localHands.length} // Utilise le compte local
-        onAddObject={handleAddObject}
+        widgetCount={widgetSnapshot.length}
+        handCount={localHands.length}
+        onAddWidget={handleAddWidget}
         onClearAll={clearAll}
       />
     </div>
