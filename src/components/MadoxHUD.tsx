@@ -1,32 +1,42 @@
-import { Plus, Trash2, Hand } from 'lucide-react';
+import { Clock, StickyNote, Info, Hash, Image, Palette, Plus, Trash2, Hand } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import type { WidgetType } from '@/types/madox';
 
 interface MadoxHUDProps {
   isLoading: boolean;
   error: string | null;
-  objectCount: number;
+  widgetCount: number;
   handCount: number;
-  onAddObject: () => void;
+  onAddWidget: (type: WidgetType) => void;
   onClearAll: () => void;
 }
+
+const WIDGET_MENU: { type: WidgetType; icon: React.ReactNode; label: string }[] = [
+  { type: 'clock',   icon: <Clock className="w-3.5 h-3.5" />,      label: 'Horloge' },
+  { type: 'notes',   icon: <StickyNote className="w-3.5 h-3.5" />,  label: 'Notes' },
+  { type: 'info',    icon: <Info className="w-3.5 h-3.5" />,        label: 'Infos' },
+  { type: 'counter', icon: <Hash className="w-3.5 h-3.5" />,       label: 'Compteur' },
+  { type: 'image',   icon: <Image className="w-3.5 h-3.5" />,      label: 'Image' },
+  { type: 'colors',  icon: <Palette className="w-3.5 h-3.5" />,    label: 'Palette' },
+];
 
 export default function MadoxHUD({
   isLoading,
   error,
-  objectCount,
+  widgetCount,
   handCount,
-  onAddObject,
+  onAddWidget,
   onClearAll,
 }: MadoxHUDProps) {
   return (
-    <div className="fixed inset-0 pointer-events-none z-10">
+    <div className="fixed inset-0 pointer-events-none" style={{ zIndex: 10 }}>
       {/* Title */}
       <div className="absolute top-6 left-6">
         <h1 className="text-lg font-mono font-bold tracking-widest text-foreground/80">
           MADOX
         </h1>
         <p className="text-xs font-mono text-muted-foreground mt-1">
-          hand interaction engine
+          widget interaction engine
         </p>
       </div>
 
@@ -57,25 +67,35 @@ export default function MadoxHUD({
       {/* Controls */}
       {!isLoading && !error && (
         <>
-          <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-3 pointer-events-auto">
-            <Button
-              onClick={onAddObject}
-              variant="outline"
-              size="sm"
-              className="font-mono text-xs bg-background/40 backdrop-blur-sm border-border/50 hover:bg-primary/10 hover:border-primary/40 hover:text-primary"
-            >
-              <Plus className="w-3.5 h-3.5 mr-1.5" />
-              Ajouter
-            </Button>
+          <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-2 pointer-events-auto">
+            {WIDGET_MENU.map(item => (
+              <Button
+                key={item.type}
+                onClick={() => onAddWidget(item.type)}
+                variant="outline"
+                size="sm"
+                className="font-mono text-xs bg-background/40 backdrop-blur-sm border-border/50 hover:bg-primary/10 hover:border-primary/40 hover:text-primary"
+              >
+                {item.icon}
+                <span className="ml-1 hidden sm:inline">{item.label}</span>
+              </Button>
+            ))}
+            <div className="w-px h-6 bg-border/30 mx-1" />
             <Button
               onClick={onClearAll}
               variant="outline"
               size="sm"
               className="font-mono text-xs bg-background/40 backdrop-blur-sm border-border/50 hover:bg-destructive/10 hover:border-destructive/40 hover:text-destructive"
             >
-              <Trash2 className="w-3.5 h-3.5 mr-1.5" />
-              Effacer
+              <Trash2 className="w-3.5 h-3.5" />
             </Button>
+          </div>
+
+          {/* Stats */}
+          <div className="absolute top-6 right-6 text-right">
+            <p className="text-xs font-mono text-muted-foreground">
+              {widgetCount} widget{widgetCount !== 1 ? 's' : ''} • {handCount} main{handCount !== 1 ? 's' : ''}
+            </p>
           </div>
 
           {/* Instructions */}
@@ -84,7 +104,7 @@ export default function MadoxHUD({
               <div className="flex items-center gap-2 text-muted-foreground/60">
                 <Hand className="w-4 h-4" />
                 <p className="text-xs font-mono">
-                  Montrez vos mains à la webcam • Pincez pour saisir les objets
+                  Montrez vos mains • Pincez pour saisir les widgets
                 </p>
               </div>
             </div>

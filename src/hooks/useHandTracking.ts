@@ -184,7 +184,6 @@ export function useHandTracking() {
 
             const newHands: HandData[] = (result.landmarks || []).map((landmarks, i) => {
               if (!landmarks || landmarks.length < 21) {
-                // Retourner main vide si données incomplètes
                 const prev = handsRef.current[i] ?? prevHandsRef.current[i];
                 return prev || {
                   landmarks: [],
@@ -194,7 +193,7 @@ export function useHandTracking() {
                   isPinching: false,
                   isGrabbing: false,
                   depth: 0.5,
-                  grabbedObjectId: null,
+                  grabbedWidgetId: null,
                 };
               }
 
@@ -243,7 +242,7 @@ export function useHandTracking() {
                 isPinching,
                 isGrabbing,
                 depth: normalizeDepth(smoothedIndex.z),
-                grabbedObjectId: prev?.grabbedObjectId ?? null,
+                grabbedWidgetId: prev?.grabbedWidgetId ?? null,
               };
             });
 
