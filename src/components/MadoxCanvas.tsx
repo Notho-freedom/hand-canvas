@@ -1,6 +1,11 @@
 import { useRef, useEffect, useCallback, useState } from 'react';
 import type { HandData, MadoxObject } from '@/types/madox';
-import { GRAB_RADIUS } from '@/types/madox';
+import { 
+  DEPTH_GRAB_THRESHOLD, 
+  DEPTH_SCALE_MAX, 
+  DEPTH_SCALE_MIN, 
+  GRAB_RADIUS 
+} from '@/types/madox';
 
 interface MadoxCanvasProps {
   hands: HandData[];
@@ -30,12 +35,17 @@ export default function MadoxCanvas({
   const fpsRef = useRef({ frames: 0, lastTime: performance.now(), fps: 0 });
   const lastUpdateRef = useRef<number>(0);
   const UPDATE_INTERVAL = 1000 / 30;
+
+  const depthToScale = useCallback((depth: number) => {
+    return DEPTH_SCALE_MIN + (DEPTH_SCALE_MAX - DEPTH_SCALE_MIN) * depth;
+  }, []);
   
   // État pour le debug
   const [debugInfo, setDebugInfo] = useState<{
     handPos: {x: number, y: number} | null;
+    handDepth: number | null;
     nearestObj: {x: number, y: number, dist: number} | null;
-  }>({ handPos: null, nearestObj: null });
+  }>({ handPos: null, handDepth: null, nearestObj: null });
 
   const render = useCallback(() => {
     const canvas = canvasRef.current;
@@ -73,6 +83,7 @@ export default function MadoxCanvas({
     const newObjects = objects.map(obj => ({ ...obj }));
 
     let debugHandPos: {x: number, y: number} | null = null;
+    let debugHandDepth: number | null = null;
     let debugNearestObj: {x: number, y: number, dist: number} | null = null;
 
     // INTERACTION LOGIC
@@ -80,12 +91,16 @@ export default function MadoxCanvas({
       // IMPORTANT: Les coordonnées sont déjà normalisées (0-1) et mirroirées dans le hook
       const hx = hand.indexTip.x * W;
       const hy = hand.indexTip.y * H;
+      const handDepth = hand.depth;
       
       if (handIdx === 0) {
         debugHandPos = { x: hx, y: hy };
+        debugHandDepth = handDepth;
       }
 
-      if (hand.isPinching) {
+      const isGrabbingGesture = hand.isPinching || hand.isGrabbing;
+
+      if (isGrabbingGesture) {
         // Already grabbing?
         if (hand.grabbedObjectId) {
           const obj = newObjects.find(o => o.id === hand.grabbedObjectId);
@@ -94,6 +109,7 @@ export default function MadoxCanvas({
             obj.vy = hy - obj.y;
             obj.x = hx;
             obj.y = hy;
+            obj.depth = handDepth;
             obj.grabbed = true;
             obj.grabbedByHand = handIdx;
           }
@@ -104,6 +120,7 @@ export default function MadoxCanvas({
           
           for (const obj of newObjects) {
             if (obj.grabbed) continue;
+            if (Math.abs(obj.depth - handDepth) > DEPTH_GRAB_THRESHOLD) continue;
             const dx = hx - obj.x;
             const dy = hy - obj.y;
             const dist = Math.sqrt(dx * dx + dy * dy);
@@ -141,11 +158,13 @@ export default function MadoxCanvas({
 
     // Mettre à jour le debug info
     if (debugHandPos) {
-      setDebugInfo({ handPos: debugHandPos, nearestObj: debugNearestObj });
+      setDebugInfo({ handPos: debugHandPos, handDepth: debugHandDepth, nearestObj: debugNearestObj });
     }
 
     // PHYSICS
     for (const obj of newObjects) {
+      const depthScale = depthToScale(obj.depth);
+      const displayRadius = obj.radius * depthScale;
       if (!obj.grabbed) {
         obj.x += obj.vx;
         obj.y += obj.vy;
@@ -153,10 +172,10 @@ export default function MadoxCanvas({
         obj.vy *= 0.92;
 
         // Bounce off walls
-        if (obj.x - obj.radius < 0) { obj.x = obj.radius; obj.vx = Math.abs(obj.vx) * 0.5; }
-        if (obj.x + obj.radius > W) { obj.x = W - obj.radius; obj.vx = -Math.abs(obj.vx) * 0.5; }
-        if (obj.y - obj.radius < 0) { obj.y = obj.radius; obj.vy = Math.abs(obj.vy) * 0.5; }
-        if (obj.y + obj.radius > H) { obj.y = H - obj.radius; obj.vy = -Math.abs(obj.vy) * 0.5; }
+        if (obj.x - displayRadius < 0) { obj.x = displayRadius; obj.vx = Math.abs(obj.vx) * 0.5; }
+        if (obj.x + displayRadius > W) { obj.x = W - displayRadius; obj.vx = -Math.abs(obj.vx) * 0.5; }
+        if (obj.y - displayRadius < 0) { obj.y = displayRadius; obj.vy = Math.abs(obj.vy) * 0.5; }
+        if (obj.y + displayRadius > H) { obj.y = H - displayRadius; obj.vy = -Math.abs(obj.vy) * 0.5; }
 
         if (Math.abs(obj.vx) < 0.1) obj.vx = 0;
         if (Math.abs(obj.vy) < 0.1) obj.vy = 0;
@@ -174,14 +193,20 @@ export default function MadoxCanvas({
     }
 
     // DRAW OBJECTS
-    for (const obj of newObjects) {
+    const sortedObjects = [...newObjects].sort((a, b) => a.depth - b.depth);
+    for (const obj of sortedObjects) {
       ctx.save();
+      const depthScale = depthToScale(obj.depth);
+      const depthRadius = obj.radius * depthScale;
 
       // Find if any hand is close (highlight)
       let isNear = false;
       for (const hand of currentHands) {
         const hx = hand.indexTip.x * W;
         const hy = hand.indexTip.y * H;
+        if (Math.abs(obj.depth - hand.depth) > DEPTH_GRAB_THRESHOLD) {
+          continue;
+        }
         const dx = hx - obj.x;
         const dy = hy - obj.y;
         if (Math.sqrt(dx * dx + dy * dy) < GRAB_RADIUS * 1.5) {
@@ -191,7 +216,7 @@ export default function MadoxCanvas({
       }
 
       // Glow
-      const glowRadius = obj.grabbed ? obj.radius * 2.5 : isNear ? obj.radius * 2 : obj.radius * 1.5;
+      const glowRadius = obj.grabbed ? depthRadius * 2.5 : isNear ? depthRadius * 2 : depthRadius * 1.5;
       const gradient = ctx.createRadialGradient(obj.x, obj.y, 0, obj.x, obj.y, glowRadius);
       gradient.addColorStop(0, obj.glowColor);
       gradient.addColorStop(1, 'transparent');
@@ -199,7 +224,7 @@ export default function MadoxCanvas({
       ctx.fillRect(obj.x - glowRadius, obj.y - glowRadius, glowRadius * 2, glowRadius * 2);
 
       // Ball
-      const displayRadius = obj.grabbed ? obj.radius * 1.2 : obj.radius;
+      const displayRadius = obj.grabbed ? depthRadius * 1.2 : depthRadius;
       ctx.beginPath();
       ctx.arc(obj.x, obj.y, displayRadius, 0, Math.PI * 2);
       ctx.fillStyle = obj.color;
@@ -271,17 +296,17 @@ export default function MadoxCanvas({
 
       ctx.beginPath();
       ctx.arc(midX, midY, Math.max(4, pinchVisualRadius), 0, Math.PI * 2);
-      ctx.strokeStyle = hand.isPinching ? 'hsl(300, 100%, 60%)' : 'hsla(180, 100%, 50%, 0.5)';
+      ctx.strokeStyle = hand.isPinching || hand.isGrabbing ? 'hsl(300, 100%, 60%)' : 'hsla(180, 100%, 50%, 0.5)';
       ctx.lineWidth = hand.isPinching ? 2.5 : 1.5;
-      ctx.shadowBlur = hand.isPinching ? 15 : 5;
-      ctx.shadowColor = hand.isPinching ? 'hsl(300, 100%, 60%)' : 'hsl(180, 100%, 50%)';
+      ctx.shadowBlur = hand.isPinching || hand.isGrabbing ? 15 : 5;
+      ctx.shadowColor = hand.isPinching || hand.isGrabbing ? 'hsl(300, 100%, 60%)' : 'hsl(180, 100%, 50%)';
       ctx.stroke();
       ctx.shadowBlur = 0;
       
       // Red dot at index tip (for precise position)
       ctx.beginPath();
       ctx.arc(hx, hy, 6, 0, Math.PI * 2);
-      ctx.fillStyle = hand.isPinching ? 'rgba(255, 0, 255, 0.8)' : 'rgba(255, 0, 0, 0.8)';
+      ctx.fillStyle = hand.isPinching || hand.isGrabbing ? 'rgba(255, 0, 255, 0.8)' : 'rgba(255, 0, 0, 0.8)';
       ctx.fill();
       
       // Distance to nearest object text
@@ -313,11 +338,14 @@ export default function MadoxCanvas({
     if (debugInfo.handPos) {
       ctx.textAlign = 'left';
       ctx.fillText(`Hand: (${Math.round(debugInfo.handPos.x)}, ${Math.round(debugInfo.handPos.y)})`, 20, 30);
+      if (debugInfo.handDepth !== null) {
+        ctx.fillText(`Depth: ${debugInfo.handDepth.toFixed(2)}`, 20, 45);
+      }
       if (debugInfo.nearestObj) {
-        ctx.fillText(`Nearest: ${Math.round(debugInfo.nearestObj.dist)}px`, 20, 50);
+        ctx.fillText(`Nearest: ${Math.round(debugInfo.nearestObj.dist)}px`, 20, 65);
       }
     }
-  }, [getObjects, updateObjects, onHandsUpdate, handsRef]);
+  }, [depthToScale, getObjects, updateObjects, onHandsUpdate, handsRef]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -356,6 +384,9 @@ export default function MadoxCanvas({
         {debugInfo.handPos && (
           <>
             <div>Hand: ({Math.round(debugInfo.handPos.x)}, {Math.round(debugInfo.handPos.y)})</div>
+            {debugInfo.handDepth !== null && (
+              <div>Depth: {debugInfo.handDepth.toFixed(2)}</div>
+            )}
             {debugInfo.nearestObj && (
               <div>Distance: {Math.round(debugInfo.nearestObj.dist)}px</div>
             )}

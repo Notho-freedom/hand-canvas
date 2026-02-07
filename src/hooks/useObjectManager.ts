@@ -15,6 +15,7 @@ export function useObjectManager() {
       x: padding + Math.random() * (canvasWidth - padding * 2),
       y: padding + Math.random() * (canvasHeight - padding * 2),
       radius: 20 + Math.random() * 25,
+      depth: 0.2 + Math.random() * 0.6,
       color: color.fill,
       glowColor: color.glow,
       grabbed: false,
