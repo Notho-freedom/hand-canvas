@@ -3,6 +3,7 @@ export interface MadoxObject {
   x: number;
   y: number;
   radius: number;
+  depth: number;
   color: string;
   glowColor: string;
   grabbed: boolean;
@@ -13,10 +14,12 @@ export interface MadoxObject {
 
 export interface HandData {
   landmarks: { x: number; y: number; z: number }[];
-  indexTip: { x: number; y: number };
-  thumbTip: { x: number; y: number };
+  indexTip: { x: number; y: number; z: number };
+  thumbTip: { x: number; y: number; z: number };
   pinchDistance: number;
   isPinching: boolean;
+  isGrabbing: boolean;
+  depth: number;
   grabbedObjectId: string | null;
 }
 
@@ -31,5 +34,12 @@ export const NEON_COLORS = [
 
 export const PINCH_THRESHOLD = 0.08;
 export const PINCH_RELEASE_THRESHOLD = 0.1;
+export const GRIP_CLOSE_THRESHOLD = 0.09;
+export const GRIP_OPEN_THRESHOLD = 0.12;
 export const GRAB_RADIUS = 60;
 export const SMOOTHING_FACTOR = 0.35;
+export const DEPTH_Z_MIN = -0.3;
+export const DEPTH_Z_MAX = 0.3;
+export const DEPTH_GRAB_THRESHOLD = 0.18;
+export const DEPTH_SCALE_MIN = 0.65;
+export const DEPTH_SCALE_MAX = 1.45;

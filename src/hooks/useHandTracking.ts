@@ -1,7 +1,15 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
 import type { HandData } from '@/types/madox';
-import { PINCH_THRESHOLD, PINCH_RELEASE_THRESHOLD, SMOOTHING_FACTOR } from '@/types/madox';
+import { 
+  PINCH_THRESHOLD, 
+  PINCH_RELEASE_THRESHOLD, 
+  GRIP_CLOSE_THRESHOLD, 
+  GRIP_OPEN_THRESHOLD, 
+  DEPTH_Z_MIN, 
+  DEPTH_Z_MAX, 
+  SMOOTHING_FACTOR 
+} from '@/types/madox';
 
 export function useHandTracking() {
   const [hands, setHands] = useState<HandData[]>([]);
@@ -29,6 +37,12 @@ export function useHandTracking() {
     const maxFactor = 0.6;
     const normalizedDistance = Math.min(distance / 0.15, 1);
     return minFactor + (maxFactor - minFactor) * normalizedDistance;
+  }, []);
+
+  const normalizeDepth = useCallback((z: number) => {
+    const clamped = Math.max(DEPTH_Z_MIN, Math.min(DEPTH_Z_MAX, z));
+    const normalized = (clamped - DEPTH_Z_MIN) / (DEPTH_Z_MAX - DEPTH_Z_MIN);
+    return 1 - normalized;
   }, []);
 
   useEffect(() => {
@@ -174,10 +188,12 @@ export function useHandTracking() {
                 const prev = handsRef.current[i] ?? prevHandsRef.current[i];
                 return prev || {
                   landmarks: [],
-                  indexTip: { x: 0, y: 0 },
-                  thumbTip: { x: 0, y: 0 },
+                  indexTip: { x: 0, y: 0, z: 0 },
+                  thumbTip: { x: 0, y: 0, z: 0 },
                   pinchDistance: 100,
                   isPinching: false,
+                  isGrabbing: false,
+                  depth: 0.5,
                   grabbedObjectId: null,
                 };
               }
@@ -208,12 +224,25 @@ export function useHandTracking() {
                 ? pinchDistance < PINCH_RELEASE_THRESHOLD
                 : pinchDistance < PINCH_THRESHOLD;
 
+              const palm = smoothedLandmarks[0];
+              const fingerTips = [4, 8, 12, 16, 20].map(idx => smoothedLandmarks[idx]);
+              const avgTipDist = fingerTips.reduce((sum, tip) => {
+                const dist = Math.hypot(tip.x - palm.x, tip.y - palm.y);
+                return sum + dist;
+              }, 0) / fingerTips.length;
+              const wasGrabbing = prev?.isGrabbing ?? false;
+              const isGrabbing = wasGrabbing
+                ? avgTipDist < GRIP_OPEN_THRESHOLD
+                : avgTipDist < GRIP_CLOSE_THRESHOLD;
+
               return {
                 landmarks: smoothedLandmarks,
                 indexTip: smoothedIndex,
                 thumbTip: smoothedThumb,
                 pinchDistance,
                 isPinching,
+                isGrabbing,
+                depth: normalizeDepth(smoothedIndex.z),
                 grabbedObjectId: prev?.grabbedObjectId ?? null,
               };
             });
@@ -265,7 +294,7 @@ export function useHandTracking() {
         handLandmarkerRef.current = null;
       }
     };
-  }, [smoothValue, getSmoothingFactor, USE_GPU]);
+  }, [smoothValue, getSmoothingFactor, normalizeDepth, USE_GPU]);
 
   return { 
     hands, 
