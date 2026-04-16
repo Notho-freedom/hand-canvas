@@ -149,7 +149,7 @@ export const ForceSchema = z.object({
   type: z.literal("force"),
   at: PointOrRef,
   vector: z.object({
-    magnitude: z.number(),
+    magnitude: z.number().optional(),
     // Either an angle in degrees (math convention, 0 = +x, 90 = +y if yAxis up)
     // OR a named direction
     angle: z.number().optional(),
