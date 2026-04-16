@@ -1,132 +1,142 @@
 
-# Projet Madox -- Des boules aux vrais widgets interactifs
+# Pivot Madox → Moteur de schémas physiques
 
-## Le changement
-On remplace les simples boules dessinées sur le Canvas par de **vrais composants React** (fenêtres, gadgets, panneaux d'info) positionnés en overlay sur le canvas. Les gestes de la main permettent de les **sélectionner, déplacer, zoomer, cliquer, et relâcher**.
+## Vision
+Remplacer toute la logique hand-tracking/widgets par un **moteur de rendu de schémas physiques** piloté par JSON, avec un repère cartésien configurable par schéma. Objectif : précision absolue de positionnement (forces au CdG, poulies au sommet exact d'un plan incliné, cordes alignées sur les ancrages, etc.).
 
-## Architecture hybride
-
-Le rendu sera séparé en deux couches :
-- **Canvas (arrière-plan)** : grille, squelette de la main, indicateurs visuels des gestes
-- **DOM (premier plan)** : les vrais widgets React positionnés en `absolute`, manipulables avec les mains
+## Architecture
 
 ```text
-+---------------------------------------------+
-|  Canvas (z-index: 0)                        |
-|  - Grille de fond                           |
-|  - Squelette main (points + connexions)     |
-|  - Indicateur de pinch                      |
-+---------------------------------------------+
-|  Widget Layer (z-index: 1)                  |
-|  - [Horloge]     [Notes]     [Info]         |
-|  - Chaque widget = composant React          |
-|  - Position/taille controlees par le state  |
-+---------------------------------------------+
-|  Hand Cursor Overlay (z-index: 2)           |
-|  - Curseur de la main au-dessus de tout     |
-+---------------------------------------------+
++-----------------------------------------------------------+
+| App = split-screen toggleable                             |
+|                                                           |
+| [ Editeur JSON ]  |  [ Canvas SVG plein ecran ]           |
+|  - Schema valide  |   - Repere (toggle on/off)            |
+|  - Erreurs live   |   - Grille + graduations              |
+|  - Exemples       |   - Composants positionnes au pixel   |
+|                   |   - Toggle: repere / grille / labels  |
++-----------------------------------------------------------+
 ```
 
-## Ce qui change dans le code
+## Modèle JSON (précis et scalable)
 
-### 1. Nouveau type `MadoxWidget` (remplace `MadoxObject`)
+```json
+{
+  "frame": {
+    "origin": { "x": 0, "y": 0 },         // origine en unites monde
+    "unit": "m",
+    "scale": 100,                          // 1 unite = 100 px
+    "yAxis": "up",                         // "up" (math) ou "down" (ecran)
+    "viewport": { "x": -2, "y": -1, "w": 8, "h": 5 }
+  },
+  "components": [
+    {
+      "id": "sol",
+      "type": "ground",
+      "at": { "x": 0, "y": 0 },
+      "params": { "length": 6, "thickness": 0.05 }
+    },
+    {
+      "id": "plan1",
+      "type": "incline",
+      "anchor": { "ref": "sol.right" },    // ancrage nomme
+      "params": { "angle": 30, "length": 4, "thickness": 0.05 }
+    },
+    {
+      "id": "bloc1",
+      "type": "block",
+      "anchor": { "ref": "plan1.surface", "t": 0.5 }, // 50% le long de la surface
+      "params": { "w": 0.6, "h": 0.4, "mass": 5 },
+      "rotation": "auto"                   // s'aligne sur le plan
+    },
+    {
+      "id": "poulie1",
+      "type": "pulley",
+      "anchor": { "ref": "plan1.top" },
+      "params": { "radius": 0.2 }
+    },
+    {
+      "id": "corde1",
+      "type": "rope",
+      "from": { "ref": "bloc1.cog" },
+      "to":   { "ref": "poulie1.tangent_to:bloc1" }
+    },
+    {
+      "id": "poids_bloc1",
+      "type": "force",
+      "at": { "ref": "bloc1.cog" },
+      "vector": { "magnitude": 49, "direction": "down" },
+      "label": "P"
+    }
+  ]
+}
+```
 
-Le type `MadoxObject` avec `radius`, `color`, `glowColor` est remplace par un type `MadoxWidget` :
+**Clés de la précision** :
+- **Ancrages nommés** par composant (`.cog`, `.top`, `.bottom`, `.left`, `.right`, `.surface`, `.tangent_to:X`) — chaque type expose ses points caractéristiques.
+- **Référencement** (`anchor.ref`) résolu dans un graphe de dépendances → topological sort avant rendu.
+- **Coordonnées paramétriques** (ex: `t: 0.5` le long d'une surface) pour positionner sur des courbes/segments.
+- **Rotation auto** : un objet posé sur une surface inclinée hérite de l'angle.
+- **Vecteurs ancrés** : forces toujours appliquées à un point logique (`.cog`, `.contact_point`).
 
-- `id`, `x`, `y`, `width`, `height` -- position et dimensions en pixels
-- `scale` -- pour le zoom (pinch-to-zoom)
-- `type` -- le type de widget (`'clock'`, `'notes'`, `'info'`, `'weather'`, `'image'`, etc.)
-- `title` -- titre affiche dans la barre du widget
-- `grabbed`, `grabbedByHand` -- etat de saisie (comme avant)
-- `selected` -- etat de selection (highlight quand la main survole)
-- `zIndex` -- pour gerer l'empilement des fenetres
-- `vx`, `vy` -- inertie quand relache (comme avant)
-- `minimized` -- possibilite de reduire le widget
+## Bibliothèque de composants
 
-### 2. Nouveau hook `useWidgetManager` (remplace `useObjectManager`)
+| Catégorie | Composants | Ancrages exposés |
+|---|---|---|
+| Surfaces | `ground`, `wall`, `incline`, `curve` | `.left`, `.right`, `.top`, `.bottom`, `.surface(t)`, `.normal(t)` |
+| Objets | `block`, `sphere`, `pulley`, `pendulum_bob` | `.cog`, `.contact_point`, `.tangent_to:X` |
+| Liens | `rope`, `spring`, `rigid_rod`, `chain` | `.from`, `.to`, `.midpoint` |
+| Vecteurs | `force`, `velocity`, `acceleration`, `axis`, `angle_arc` | (consomment des refs) |
+| Annotations | `label`, `dimension`, `coordinate_marker` | — |
 
-Gere la collection de widgets avec :
-- `addWidget(type, x, y)` -- ajouter un widget d'un type donne
-- `removeWidget(id)` -- supprimer un widget
-- `updateWidget(id, updates)` -- mettre a jour position, taille, etc.
-- `bringToFront(id)` -- amener un widget au premier plan
-- `getWidgets()` -- recuperer tous les widgets
+## Moteur de résolution (le cœur du projet)
 
-### 3. Nouveau hook `useHandInteraction`
+1. **Parse JSON** → validation schéma (Zod).
+2. **Build dependency graph** des `anchor.ref`.
+3. **Topological sort** : on calcule les composants sans deps d'abord.
+4. **Resolve anchors** : chaque composant calcule ses points en coordonnées monde, puis ses ancrages dérivés.
+5. **Apply frame transform** : monde → écran (origine, scale, yAxis).
+6. **Render SVG** : chaque composant = fonction pure `(resolved) => <g>...</g>`.
 
-Decouple la logique d'interaction main/widgets du rendu :
-- Detecte quel widget est sous le curseur de la main (hit-testing rectangulaire)
-- Gere les etats : **hover** (main proche), **grab** (pinch sur widget), **drag** (deplacement), **release** (lacher)
-- Gere le **pinch-to-zoom** : ecartement de deux doigts pour redimensionner
-- Gere le **tap** : pinch rapide pour "cliquer" sur un element du widget
-- Emet des evenements que les widgets peuvent ecouter
+## Interface
 
-### 4. Composant `MadoxWidgetRenderer` (remplace le dessin Canvas des boules)
+- **Layout split** : éditeur JSON Monaco à gauche (40%), canvas SVG à droite (60%).
+- **Toolbar canvas** :
+  - Toggle repère (axes X/Y avec flèches et labels)
+  - Toggle grille (subdivisions selon `scale`)
+  - Toggle labels composants
+  - Toggle ancrages (debug : affiche tous les points nommés)
+  - Bouton plein écran (cache l'éditeur)
+  - Sélecteur d'exemples (plan incliné simple, Atwood, pendule, poulie+plan, ressort+masse...)
+- **Validation live** : erreurs JSON + erreurs sémantiques (ref introuvable, cycle, etc.) affichées en bas de l'éditeur.
 
-Un composant React qui :
-- Rend chaque widget comme un `div` positionne en `absolute`
-- Applique `transform: translate(x, y) scale(s)` pour position et zoom
-- Ajoute un contour lumineux neon quand le widget est selectionne/saisi
-- Affiche une barre de titre avec le nom du widget et un bouton fermer
+## Fichiers à créer
 
-### 5. Widgets de demonstration
+| Fichier | Rôle |
+|---|---|
+| `src/types/schema.ts` | Types TS + schéma Zod du JSON |
+| `src/engine/frame.ts` | Transform monde↔écran selon `frame` |
+| `src/engine/resolver.ts` | Graphe deps + topo sort + résolution ancrages |
+| `src/engine/anchors.ts` | Calcul des ancrages par type de composant |
+| `src/components/schema/Frame.tsx` | Repère, grille, axes (SVG) |
+| `src/components/schema/SchemaCanvas.tsx` | Canvas SVG principal + viewBox |
+| `src/components/schema/parts/Ground.tsx` | + `Wall`, `Incline`, `Block`, `Sphere`, `Pulley`, `Rope`, `Spring`, `Rod`, `Force`, `Velocity`, `Axis`, `Label`, `Dimension` (un fichier par composant) |
+| `src/components/schema/JsonEditor.tsx` | Éditeur (textarea stylé ou Monaco light) + validation |
+| `src/components/schema/Toolbar.tsx` | Toggles repère/grille/labels/ancrages + plein écran |
+| `src/data/examples.ts` | Schémas JSON d'exemple |
+| `src/pages/Index.tsx` | Réécrit : split-screen éditeur + canvas |
 
-Plusieurs types de widgets pour montrer la polyvalence :
+## Fichiers à supprimer (ancien projet)
+`src/hooks/useHandTracking.ts`, `useHandInteraction.ts`, `useWidgetManager.ts`, `src/components/MadoxCanvas.tsx`, `MadoxHUD.tsx`, `MadoxWidgetRenderer.tsx`, `NavLink.tsx`, tout `src/components/widgets/*`, `src/lib/smoothing.ts`, `src/types/madox.ts`. Désinstaller `@mediapipe/*`.
 
-| Widget | Contenu | Interactions |
-|--------|---------|-------------|
-| **Horloge** | Heure en temps reel, style digital neon | Deplacer, zoomer |
-| **Notes** | Zone de texte editable | Deplacer, zoomer, taper pour editer |
-| **Info systeme** | FPS, nombre de mains, stats | Deplacer, zoomer |
-| **Palette couleurs** | Grille de couleurs | Deplacer, taper pour selectionner |
-| **Image** | Affiche une image/placeholder | Deplacer, zoomer |
-| **Compteur** | Boutons +/- avec un compteur | Deplacer, taper les boutons |
+## Détails techniques de précision
 
-### 6. Canvas simplifie
+- **SVG plutôt que Canvas** : positionnement vectoriel exact, zoom infini sans pixellisation, sélection/inspection facile.
+- **viewBox dynamique** : calculé depuis `frame.viewport` → garantit que les coordonnées monde mappent exactement à l'écran.
+- **Y-flip** : si `yAxis: "up"`, on applique `transform="scale(1,-1)"` au groupe racine, et on contre-flip les textes.
+- **Ancrage `tangent_to`** : pour une corde sur poulie, calcul géométrique réel de la tangente (pas une approximation).
+- **Rotation auto** : un bloc sur incline reçoit `rotation = incline.angle` et son point de contact = base centrée.
+- **Centre de gravité** : chaque type a une formule (`block.cog = centre`, `incline.cog = barycentre triangle`, etc.).
 
-Le `MadoxCanvas` est simplifie :
-- Ne dessine plus les boules (supprime tout le code de rendu des objets)
-- Garde la grille de fond, le squelette de la main, l'indicateur de pinch
-- Ajoute un curseur de main dessine au-dessus de tout (sur un canvas separe en z-index 2)
-
-### 7. Gestes supportes
-
-| Geste | Action |
-|-------|--------|
-| **Main ouverte + survol** | Highlight du widget le plus proche |
-| **Pinch (pouce+index) sur un widget** | Saisir et deplacer le widget |
-| **Relacher le pinch** | Lacher le widget (avec inertie) |
-| **Pinch rapide (tap)** | Cliquer sur un element interactif du widget |
-| **Deux mains en pinch sur le meme widget** | Zoom (pinch-to-zoom) |
-| **Main ouverte + balayage** | Lancer/pousser le widget |
-
-### 8. HUD mis a jour
-
-Le HUD est adapte :
-- Remplace "Ajouter objet" par un menu de types de widgets a ajouter
-- Affiche le nombre de widgets au lieu d'objets
-- Instructions mises a jour pour les gestes
-
-## Fichiers concernes
-
-| Fichier | Action |
-|---------|--------|
-| `src/types/madox.ts` | Remplacer `MadoxObject` par `MadoxWidget`, ajouter les types de widgets |
-| `src/hooks/useObjectManager.ts` | Remplacer par `src/hooks/useWidgetManager.ts` |
-| `src/hooks/useHandInteraction.ts` | Nouveau -- logique interaction main/widgets |
-| `src/components/MadoxCanvas.tsx` | Simplifier -- garder grille + mains, supprimer rendu boules |
-| `src/components/MadoxWidgetRenderer.tsx` | Nouveau -- rend les widgets React en overlay |
-| `src/components/widgets/WidgetWrapper.tsx` | Nouveau -- enveloppe chaque widget (barre titre, glow, etc.) |
-| `src/components/widgets/ClockWidget.tsx` | Nouveau -- gadget horloge |
-| `src/components/widgets/NotesWidget.tsx` | Nouveau -- gadget notes |
-| `src/components/widgets/InfoWidget.tsx` | Nouveau -- gadget infos systeme |
-| `src/components/widgets/CounterWidget.tsx` | Nouveau -- gadget compteur |
-| `src/components/widgets/ImageWidget.tsx` | Nouveau -- gadget image |
-| `src/components/MadoxHUD.tsx` | Modifier -- menu d'ajout de widgets |
-| `src/pages/Index.tsx` | Adapter -- utiliser les nouveaux hooks et composants |
-
-## Detail technique important
-
-Le hit-testing (savoir si la main est sur un widget) se fait en comparant la position de l'index (convertie en pixels ecran) avec les rectangles `{x, y, width * scale, height * scale}` de chaque widget. On teste du `zIndex` le plus haut au plus bas pour que le widget au premier plan soit prioritaire.
-
-La physique (inertie + friction + rebonds sur les bords) reste la meme mais s'applique aux rectangles au lieu des cercles.
+## Livrable de cette itération
+Le moteur complet + 4 exemples fonctionnels : (1) bloc sur plan incliné avec poids/normale/frottement, (2) poulie en sommet de plan + masse suspendue + corde, (3) Atwood (deux masses + poulie), (4) ressort horizontal sur sol avec masse.
