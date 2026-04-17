@@ -1,142 +1,668 @@
+Parfait, on va transformer ton plan en une **spec béton, exploitable direct par Lovable**, avec zéro zone floue et aucun comportement implicite dangereux.
 
-# Pivot Madox → Moteur de schémas physiques
+Je garde ta structure, mais je l’upgrade en **v2.1 — production-ready**, avec les correctifs critiques intégrés.
 
-## Vision
-Remplacer toute la logique hand-tracking/widgets par un **moteur de rendu de schémas physiques** piloté par JSON, avec un repère cartésien configurable par schéma. Objectif : précision absolue de positionnement (forces au CdG, poulies au sommet exact d'un plan incliné, cordes alignées sur les ancrages, etc.).
+---
 
-## Architecture
+# 🚀 Madox v2.1 — Solveur géométrique contraint (spec finale)
+
+## 🧠 Objectif
+
+Passer de :
 
 ```text
-+-----------------------------------------------------------+
-| App = split-screen toggleable                             |
-|                                                           |
-| [ Editeur JSON ]  |  [ Canvas SVG plein ecran ]           |
-|  - Schema valide  |   - Repere (toggle on/off)            |
-|  - Erreurs live   |   - Grille + graduations              |
-|  - Exemples       |   - Composants positionnes au pixel   |
-|                   |   - Toggle: repere / grille / labels  |
-+-----------------------------------------------------------+
+Renderer déterministe
+
 ```
 
-## Modèle JSON (précis et scalable)
+à :
+
+```text
+Solveur géométrique + moteur de contraintes + visualisation physique exacte
+
+```
+
+Avec :
+
+- précision géométrique stricte
+- cohérence physique visuelle
+- stabilité numérique
+
+---
+
+# 1. 🔁 PIPELINE MULTI-PASS (AMÉLIORÉ)
+
+```text
+PASS 1  Placement brut
+PASS 2  Géométrie dérivée
+PASS 3  Résolution contraintes (pondérée)
+PASS 4  Snapping & stabilisation
+PASS 5  Finalisation géométrique (paths)
+PASS 6  Génération forces (autoForces)
+PASS 7  Render SVG
+
+```
+
+---
+
+## 🔥 NOUVEAU : boucle de convergence
+
+```ts
+for (let i = 0; i < MAX_ITER; i++) {
+  applyConstraintsWeighted()
+  if (converged()) break
+}
+
+```
+
+```ts
+const MAX_ITER = 5
+const EPSILON = 1e-6
+
+```
+
+---
+
+# 2. 🧠 CONTRAINTES AVEC PRIORITÉ & POIDS
+
+## Nouveau format :
 
 ```json
 {
-  "frame": {
-    "origin": { "x": 0, "y": 0 },         // origine en unites monde
-    "unit": "m",
-    "scale": 100,                          // 1 unite = 100 px
-    "yAxis": "up",                         // "up" (math) ou "down" (ecran)
-    "viewport": { "x": -2, "y": -1, "w": 8, "h": 5 }
-  },
-  "components": [
-    {
-      "id": "sol",
-      "type": "ground",
-      "at": { "x": 0, "y": 0 },
-      "params": { "length": 6, "thickness": 0.05 }
-    },
-    {
-      "id": "plan1",
-      "type": "incline",
-      "anchor": { "ref": "sol.right" },    // ancrage nomme
-      "params": { "angle": 30, "length": 4, "thickness": 0.05 }
-    },
-    {
-      "id": "bloc1",
-      "type": "block",
-      "anchor": { "ref": "plan1.surface", "t": 0.5 }, // 50% le long de la surface
-      "params": { "w": 0.6, "h": 0.4, "mass": 5 },
-      "rotation": "auto"                   // s'aligne sur le plan
-    },
-    {
-      "id": "poulie1",
-      "type": "pulley",
-      "anchor": { "ref": "plan1.top" },
-      "params": { "radius": 0.2 }
-    },
-    {
-      "id": "corde1",
-      "type": "rope",
-      "from": { "ref": "bloc1.cog" },
-      "to":   { "ref": "poulie1.tangent_to:bloc1" }
-    },
-    {
-      "id": "poids_bloc1",
-      "type": "force",
-      "at": { "ref": "bloc1.cog" },
-      "vector": { "magnitude": 49, "direction": "down" },
-      "label": "P"
-    }
-  ]
+  "type": "horizontal",
+  "object": "ressort1",
+  "priority": 10,
+  "weight": 1.0
+}
+
+```
+
+---
+
+## 🎯 Règles moteur :
+
+- tri par `priority DESC`
+- application avec **relaxation pondérée**
+- correction partielle :
+
+```ts
+position += correction * weight
+
+```
+
+---
+
+## ⚠️ Gestion conflits :
+
+- contraintes incompatibles → warning console + fallback
+- log dev mode :
+
+```text
+[ConstraintConflict] ressort1: horizontal vs colinear
+
+```
+
+---
+
+# 3. 🧩 ANCHOR DSL (FINAL)
+
+## Type complet :
+
+```ts
+type AnchorRef =
+  | { kind: "point"; id: string; anchor: string; offset?: Point }
+  | { kind: "curve"; id: string; curve: string; t: number }
+  | { kind: "tangent"; from: string; to: string; side?: "external"|"internal"|"auto" }
+  | { kind: "face"; id: string; face: "top"|"bottom"|"left"|"right"; align?: "center" }
+  | { kind: "normal"; id: string; at?: AnchorRef; length?: number }
+
+```
+
+---
+
+## 🔥 NOUVEAU : sélection automatique intelligente
+
+```json
+{
+  "type": "attach_best_face",
+  "object": "bloc",
+  "towards": "poulie"
+}
+
+```
+
+👉 Choix :
+
+```text
+max(dot(normal_face, direction_target))
+
+```
+
+---
+
+# 4. 📐 ANCHORS PAR COMPOSANT (COMPLÉTÉ)
+
+## Block
+
+```text
+- cog
+- face_*_center
+- normal_*
+- contact_surface
+
+```
+
+---
+
+## Incline
+
+```text
+- surface(t)
+- normal(t)
+- tangent(t)
+- top
+- foot
+
+```
+
+---
+
+## Pulley
+
+```text
+- center
+- tangent_point(target, side)
+- arc(startAngle, endAngle)
+
+```
+
+---
+
+# 5. 🧵 ROPE ENGINE (CRITIQUE)
+
+## Nouveau modèle :
+
+```ts
+type RopePath = [
+  LineSegment,
+  ArcSegment,
+  LineSegment
+]
+
+```
+
+---
+
+## 🔥 Solveur global :
+
+```ts
+solveRopePath(A, pulley, B)
+
+```
+
+Retourne :
+
+- tangente A → poulie
+- arc sur poulie
+- tangente poulie → B
+
+---
+
+## 🎯 Contraintes supportées :
+
+- `tension`
+- `tension_equal`
+- `vertical`
+- `horizontal`
+
+---
+
+## ⚠️ Règles :
+
+- corde = inextensible (`stretch = 0`)
+- segments toujours continus
+- tangence exacte (pas d’approx)
+
+---
+
+# 6. 🌀 RESSORT (FIX CRITIQUE)
+
+## Axe défini par contraintes :
+
+```json
+{ "type": "horizontal", "object": "ressort" }
+
+```
+
+---
+
+## Rendu :
+
+- spirale projetée sur axe
+- jamais basé sur from→to brut
+
+---
+
+## 🔥 Force automatique :
+
+```text
+F = -k * (longueur - longueur_repos)
+
+```
+
+---
+
+# 7. 🧲 AUTO FORCES (CORRIGÉ)
+
+## Dépend de :
+
+- PASS 2 (normales)
+- PASS 3 (contraintes)
+
+---
+
+## Génération :
+
+### Bloc :
+
+- poids (↓)
+- normale (⊥ surface)
+- frottement (// surface)
+
+---
+
+### Corde :
+
+- tension (direction locale corde)
+
+---
+
+### Ressort :
+
+- force alignée sur axe
+
+---
+
+## ⚠️ Interdiction :
+
+❌ pas de direction hardcodée  
+✅ toujours dérivée
+
+---
+
+# 8. 📍 REPÈRES LOCAUX (UPGRADE)
+
+## Nouveau format :
+
+```json
+{
+  "type": "local_frame",
+  "of": "bloc",
+  "origin": "cog",
+  "mode": "surface_aligned",
+  "style": "dashed"
+}
+
+```
+
+---
+
+## Axes :
+
+- `surface_aligned` → tangent + normal
+- `world_aligned` → X/Y global
+
+---
+
+## 🔥 Projection :
+
+```json
+{
+  "type": "projection",
+  "force": "P",
+  "onto": "bloc.frame",
+  "components": ["x", "y"]
+}
+
+```
+
+---
+
+## Rendu :
+
+- pointillés
+- labels Px / Py
+- angles visibles
+
+---
+
+# 9. 📏 SNAP & STABILITÉ NUMÉRIQUE
+
+## Global :
+
+```ts
+const EPSILON = 1e-6
+
+```
+
+---
+
+## Règles :
+
+```ts
+if (Math.abs(dx) < EPSILON) dx = 0
+if (Math.abs(dy) < EPSILON) dy = 0
+
+```
+
+---
+
+## Effets :
+
+- lignes parfaitement horizontales/verticales
+- pas de jitter
+- rendu propre
+
+---
+
+# 10. ⚙️ PROPRIÉTÉS PHYSIQUES
+
+## Nouveau champ :
+
+```json
+"physics": {
+  "rigid": true,
+  "stretch": 0
+}
+
+```
+
+---
+
+## Usage :
+
+
+| Objet   | Propriété    |
+| ------- | ------------ |
+| corde   | stretch = 0  |
+| ressort | stretch > 0  |
+| bloc    | rigid = true |
+
+
+---
+
+# 11. 🧭 FRAME (FINAL)
+
+```json
+"frame": {
+  "world": { "unit": "m", "yAxis": "up" },
+  "camera": { "x": 0, "y": 0, "zoom": 100 },
+  "screen": { "auto": true }
+}
+
+```
+
+---
+
+# 12. 🧠 CAS LIMITES (OBLIGATOIRE)
+
+Dans `geometry.ts` :
+
+```ts
+if (distance < EPSILON) fallback()
+if (angle ≈ 0) simplify()
+if (vertical) snap()
+
+```
+
+---
+
+# 13. 📦 FICHIERS (FINAL)
+
+### Core engine
+
+- `resolver.ts` → pipeline multi-pass + convergence
+- `constraints.ts` → solveurs pondérés
+- `geometry.ts` → primitives robustes
+- `ropes.ts` → solveur complet corde
+- `autoForces.ts` → forces dérivées
+
+---
+
+### Rendering
+
+- `Rope.tsx` → path SVG (line + arc)
+- `Spring.tsx` → spirale alignée
+- `LocalFrame.tsx`
+- `Projection.tsx`
+
+---
+
+# 14. 🎯 CORRECTIONS DIRECTES DE TES BUGS
+
+## ✔ Ressort incliné
+
+→ contrainte `horizontal` + axe imposé
+
+## ✔ Mauvais point d’attache
+
+→ `attach_best_face`
+
+## ✔ Cordes pas tendues
+
+→ `tension` + rope solver
+
+## ✔ Atwood faux
+
+→ une seule corde + arc poulie
+
+## ✔ Forces manquantes
+
+→ `autoForces`
+
+## ✔ Pas de repères locaux
+
+→ `local_frame`
+
+## ✔ Directions fausses
+
+→ dérivées via contraintes
+
+---
+
+# 🧠 VERDICT FINAL
+
+👉 Cette version :
+
+```text
+v2.1 = moteur géométrique robuste + solveur stable + rendu physiquement cohérent
+
+```
+
+---
+
+# 🔥 Niveau atteint
+
+Avec ça tu es à :
+
+```text
+GeoGebra physique programmable + moteur pédagogique
+
+```
+
+---
+
+# 🚀 Next step (quand tu seras prêt)
+
+- génération automatique des équations
+- export PDF exercices
+- mode “résolution guidée”
+
+---
+
+Si tu veux, je peux te faire ensuite :
+
+👉 un **exemple JSON v2.1 parfait (Atwood + projections + contraintes)**  
+👉 ou carrément **le pseudo-code complet du solveur**
+
+Là, ton moteur est prêt à devenir un vrai produit.  
+  
+  
+  
+Madox v2 — Du renderer au solveur géométrique avec contraintes
+
+## Diagnostic accepté
+
+Le moteur v1 est un **placement engine** : `JSON → topo sort → resolve → render`. Il ne sait pas garantir qu'une corde est *réellement* tangente, qu'un ressort est *vraiment* horizontal, ou qu'une corde Atwood est *continue* sur la poulie. On passe à un **constraint-driven geometric engine** multi-pass.
+
+## Les 6 chantiers
+
+### 1. Pipeline multi-pass (cœur)
+
+Remplacer le single-pass par 5 passes :
+
+```text
+PASS 1  Placement brut       (ancrages simples : at, anchor.ref → point)
+PASS 2  Géométrie dérivée    (faces, normales, tangentes candidates)
+PASS 3  Résolution contraintes (alignements, tangentes, tension, vertical/horizontal)
+PASS 4  Finalisation         (positions corrigées + chemins de cordes/ressorts)
+PASS 5  Render SVG
+```
+
+Itératif si nécessaire (relaxation 2-3 tours pour contraintes couplées).
+
+### 2. AnchorRef typé (DSL géométrique)
+
+Remplacer `{ ref: "bloc1.cog" }` (string parser fragile) par une **union discriminée** :
+
+```ts
+type AnchorRef =
+  | { kind: "point";   id: string; anchor: string; offset?: Point }
+  | { kind: "curve";   id: string; curve: string;  t: number }
+  | { kind: "tangent"; from: string; to: string; side?: "external"|"internal"|"upper"|"lower" }
+  | { kind: "face";    id: string; face: "top"|"bottom"|"left"|"right"; align?: "center"|"start"|"end" }
+  | { kind: "normal";  id: string; at?: AnchorRef; length?: number }
+```
+
+Validation Zod stricte → erreurs **compile-time / parse-time**, plus à l'exécution.
+
+### 3. Anchors enrichis par composant
+
+Ajouts obligatoires :
+
+
+| Composant | Nouveaux anchors                                                                                                                               |
+| --------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `block`   | `face_top_center`, `face_bottom_center`, `face_left_center`, `face_right_center`, `normal_top`, `normal_bottom`, `normal_left`, `normal_right` |
+| `incline` | `surface(t)`, `normal(t)`, `tangent(t)`, `top`, `foot`, `face_top_center`                                                                      |
+| `pulley`  | `tangent_point(dirRef, side)`, `arc(angleStart, angleEnd)`, `contact_point(angle)`                                                             |
+| `sphere`  | `normal(angle)`, `tangent_point(targetRef)`                                                                                                    |
+
+
+### 4. Système de contraintes (nouveau bloc JSON)
+
+```json
+"constraints": [
+  { "type": "horizontal", "object": "ressort1" },
+  { "type": "vertical",   "object": "corde2" },
+  { "type": "colinear",   "points": ["A", "B", "C"] },
+  { "type": "tangent",    "rope": "c1", "pulley": "p1", "side": "external" },
+  { "type": "attach_face_center", "rope": "c1", "object": "bloc1", "face": "top" },
+  { "type": "tension",    "rope": "c1" },
+  { "type": "tension_equal", "rope": "c1" }
+]
+```
+
+**Solveur** : pour chaque contrainte, fonction de projection qui ajuste les ancrages calculés en PASS 1-2.
+
+### 5. Cordes & ressorts comme chemins multi-segments
+
+Au lieu d'une simple ligne `from → to` :
+
+```ts
+type RopePath = Array<
+  | { type: "line"; from: Point; to: Point }
+  | { type: "arc";  center: Point; radius: number; startAngle: number; endAngle: number; sweep: 0|1 }
+>
+```
+
+- **Atwood** : 1 seule corde `path: ["m1.top", "p1.arc", "m2.top"]` → résolution auto des deux tangentes + arc supérieur.
+- **Ressort** : axe défini par contrainte (`horizontal`/`vertical`/`colinear`) → spirale alignée le long de cet axe, **jamais oblique par accident**.
+- **Tangente réelle** : choix correct entre les 2 solutions via le champ `side` ou heuristique (côté opposé à la masse).
+
+### 6. Repères locaux + projections (feature pédagogique majeure)
+
+Nouveau composant :
+
+```json
+{ "type": "local_frame", "of": "bloc1", "mode": "surface_aligned", "axes": ["x'", "y'"], "style": "dashed" }
+```
+
+- `surface_aligned` : x' = tangente du support sous-jacent, y' = normale.
+- `world_aligned` : x' = horizontal, y' = vertical.
+
+Et la projection automatique :
+
+```json
+{ "type": "projection", "force": "P", "onto": "bloc1.frame", "show": ["x", "y"], "labels": ["Px", "Py"] }
+```
+
+Rendu : composantes en pointillés + labels.
+
+### 7. Forces automatiques (bonus pédagogique)
+
+Champ `autoForces: true` sur un objet → génère :
+
+- **Bloc sur surface** : poids `P`, normale `N`, frottement `f` (si déclaré).
+- **Ressort** : force `F = -k·x` aux deux extrémités, le long de l'axe.
+- **Corde** : tension `T` aux extrémités, le long de la tangente locale.
+
+### 8. Caméra séparée du monde (nettoyage repère)
+
+Refactor `frame` :
+
+```json
+"frame": {
+  "world":  { "unit": "m", "yAxis": "up" },
+  "camera": { "x": 0, "y": 0, "zoom": 100 },
+  "screen": { "auto": true }
 }
 ```
 
-**Clés de la précision** :
-- **Ancrages nommés** par composant (`.cog`, `.top`, `.bottom`, `.left`, `.right`, `.surface`, `.tangent_to:X`) — chaque type expose ses points caractéristiques.
-- **Référencement** (`anchor.ref`) résolu dans un graphe de dépendances → topological sort avant rendu.
-- **Coordonnées paramétriques** (ex: `t: 0.5` le long d'une surface) pour positionner sur des courbes/segments.
-- **Rotation auto** : un objet posé sur une surface inclinée hérite de l'angle.
-- **Vecteurs ancrés** : forces toujours appliquées à un point logique (`.cog`, `.contact_point`).
+`scale` → `camera.zoom`. Préparation zoom/pan dynamique futur.
 
-## Bibliothèque de composants
+## Fichiers touchés
 
-| Catégorie | Composants | Ancrages exposés |
-|---|---|---|
-| Surfaces | `ground`, `wall`, `incline`, `curve` | `.left`, `.right`, `.top`, `.bottom`, `.surface(t)`, `.normal(t)` |
-| Objets | `block`, `sphere`, `pulley`, `pendulum_bob` | `.cog`, `.contact_point`, `.tangent_to:X` |
-| Liens | `rope`, `spring`, `rigid_rod`, `chain` | `.from`, `.to`, `.midpoint` |
-| Vecteurs | `force`, `velocity`, `acceleration`, `axis`, `angle_arc` | (consomment des refs) |
-| Annotations | `label`, `dimension`, `coordinate_marker` | — |
 
-## Moteur de résolution (le cœur du projet)
+| Fichier                                      | Action                                                                                                            |
+| -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `src/types/schema.ts`                        | AnchorRef typé (union), `constraints[]`, `local_frame`, `projection`, `frame.camera`, refactor cordes en `path[]` |
+| `src/engine/anchors.ts`                      | Ajouter face_centers, normals, tangent_point, arc, surface(t)/normal(t)/tangent(t)                                |
+| `src/engine/resolver.ts`                     | Réécrit en 5 passes                                                                                               |
+| `src/engine/constraints.ts`                  | **Nouveau** — solveurs : horizontal, vertical, colinear, tangent, attach_face_center, tension                     |
+| `src/engine/geometry.ts`                     | **Nouveau** — primitives : tangente cercle-point, projection, intersection, arc-path                              |
+| `src/engine/ropes.ts`                        | **Nouveau** — construction de `RopePath` multi-segments (lignes + arcs)                                           |
+| `src/engine/autoForces.ts`                   | **Nouveau** — génération forces P, N, T, F_ressort                                                                |
+| `src/components/schema/parts/Rope.tsx`       | Render path multi-segments (line + arc en SVG)                                                                    |
+| `src/components/schema/parts/Spring.tsx`     | Spirale alignée sur axe résolu                                                                                    |
+| `src/components/schema/parts/LocalFrame.tsx` | **Nouveau** — repère local pointillé                                                                              |
+| `src/components/schema/parts/Projection.tsx` | **Nouveau** — composantes + labels                                                                                |
+| `src/data/examples.ts`                       | Réécrire les 4 exemples avec contraintes + repères locaux + autoForces                                            |
 
-1. **Parse JSON** → validation schéma (Zod).
-2. **Build dependency graph** des `anchor.ref`.
-3. **Topological sort** : on calcule les composants sans deps d'abord.
-4. **Resolve anchors** : chaque composant calcule ses points en coordonnées monde, puis ses ancrages dérivés.
-5. **Apply frame transform** : monde → écran (origine, scale, yAxis).
-6. **Render SVG** : chaque composant = fonction pure `(resolved) => <g>...</g>`.
 
-## Interface
+## Stratégie de migration
 
-- **Layout split** : éditeur JSON Monaco à gauche (40%), canvas SVG à droite (60%).
-- **Toolbar canvas** :
-  - Toggle repère (axes X/Y avec flèches et labels)
-  - Toggle grille (subdivisions selon `scale`)
-  - Toggle labels composants
-  - Toggle ancrages (debug : affiche tous les points nommés)
-  - Bouton plein écran (cache l'éditeur)
-  - Sélecteur d'exemples (plan incliné simple, Atwood, pendule, poulie+plan, ressort+masse...)
-- **Validation live** : erreurs JSON + erreurs sémantiques (ref introuvable, cycle, etc.) affichées en bas de l'éditeur.
+- **Rétrocompatibilité** : l'ancien format string (`{ ref: "bloc1.cog" }`) reste accepté → normalisé en interne vers `{ kind: "point", id, anchor }`. Pas de casse pour les exemples existants.
+- **Opt-in** : `constraints[]`, `autoForces`, `local_frame` sont optionnels. Un schéma v1 continue de marcher.
+- **Validation** : Zod produit des messages d'erreur précis pointant la ligne/champ fautif.
 
-## Fichiers à créer
+## Livrables de l'itération
 
-| Fichier | Rôle |
-|---|---|
-| `src/types/schema.ts` | Types TS + schéma Zod du JSON |
-| `src/engine/frame.ts` | Transform monde↔écran selon `frame` |
-| `src/engine/resolver.ts` | Graphe deps + topo sort + résolution ancrages |
-| `src/engine/anchors.ts` | Calcul des ancrages par type de composant |
-| `src/components/schema/Frame.tsx` | Repère, grille, axes (SVG) |
-| `src/components/schema/SchemaCanvas.tsx` | Canvas SVG principal + viewBox |
-| `src/components/schema/parts/Ground.tsx` | + `Wall`, `Incline`, `Block`, `Sphere`, `Pulley`, `Rope`, `Spring`, `Rod`, `Force`, `Velocity`, `Axis`, `Label`, `Dimension` (un fichier par composant) |
-| `src/components/schema/JsonEditor.tsx` | Éditeur (textarea stylé ou Monaco light) + validation |
-| `src/components/schema/Toolbar.tsx` | Toggles repère/grille/labels/ancrages + plein écran |
-| `src/data/examples.ts` | Schémas JSON d'exemple |
-| `src/pages/Index.tsx` | Réécrit : split-screen éditeur + canvas |
-
-## Fichiers à supprimer (ancien projet)
-`src/hooks/useHandTracking.ts`, `useHandInteraction.ts`, `useWidgetManager.ts`, `src/components/MadoxCanvas.tsx`, `MadoxHUD.tsx`, `MadoxWidgetRenderer.tsx`, `NavLink.tsx`, tout `src/components/widgets/*`, `src/lib/smoothing.ts`, `src/types/madox.ts`. Désinstaller `@mediapipe/*`.
-
-## Détails techniques de précision
-
-- **SVG plutôt que Canvas** : positionnement vectoriel exact, zoom infini sans pixellisation, sélection/inspection facile.
-- **viewBox dynamique** : calculé depuis `frame.viewport` → garantit que les coordonnées monde mappent exactement à l'écran.
-- **Y-flip** : si `yAxis: "up"`, on applique `transform="scale(1,-1)"` au groupe racine, et on contre-flip les textes.
-- **Ancrage `tangent_to`** : pour une corde sur poulie, calcul géométrique réel de la tangente (pas une approximation).
-- **Rotation auto** : un bloc sur incline reçoit `rotation = incline.angle` et son point de contact = base centrée.
-- **Centre de gravité** : chaque type a une formule (`block.cog = centre`, `incline.cog = barycentre triangle`, etc.).
-
-## Livrable de cette itération
-Le moteur complet + 4 exemples fonctionnels : (1) bloc sur plan incliné avec poids/normale/frottement, (2) poulie en sommet de plan + masse suspendue + corde, (3) Atwood (deux masses + poulie), (4) ressort horizontal sur sol avec masse.
+1. Solveur multi-pass fonctionnel + 8 types de contraintes.
+2. AnchorRef typé partout (rétrocompat string preservée).
+3. Cordes Atwood **réellement continues** sur poulie (arc + 2 tangentes).
+4. Ressort horizontal **garanti horizontal** par contrainte.
+5. Tangente corde-poulie **mathématiquement exacte** (choix de side).
+6. Repères locaux + projection des forces sur 1 exemple (bloc sur incliné).
+7. AutoForces sur les 4 exemples (P, N, T générés automatiquement).
+8. Frame refactoré (`world`/`camera`/`screen`).
