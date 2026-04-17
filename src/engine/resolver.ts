@@ -1,4 +1,5 @@
-import type { Component, Point, Schema, AnchorRef } from "@/types/schema";
+import type { Component, Point, Schema, NormRef } from "@/types/schema";
+import { normalizeRef, isRef } from "@/types/schema";
 import {
   buildGround,
   buildWall,
@@ -8,26 +9,40 @@ import {
   buildPulley,
   type Resolved,
 } from "./anchors";
+import { pickTangent, sub, norm, dot, EPSILON } from "./geometry";
+import { solveConstraints } from "./constraints";
+import { generateAutoForces, type AutoForce } from "./autoForces";
 
 export interface ResolveResult {
   resolved: Map<string, Resolved>;
-  /** Components with no spatial origin themselves (rope, force, etc.) — kept in order. */
   order: string[];
   errors: string[];
+  warnings: string[];
+  facts: Map<string, any>;
+  autoForces: AutoForce[];
 }
 
-const isRef = (v: any): v is AnchorRef => v && typeof v === "object" && "ref" in v;
-
 function refDeps(comp: Component): string[] {
-  const deps: string[] = [];
+  const deps = new Set<string>();
   const collect = (v: any) => {
     if (!v) return;
-    if (isRef(v)) {
-      const id = v.ref.split(".")[0];
-      // tangent_to:X may bind another id
-      const m = v.ref.match(/tangent_to:([\w-]+)/);
-      if (m) deps.push(m[1]);
-      deps.push(id);
+    const n = normalizeRef(v);
+    if (!n) return;
+    switch (n.kind) {
+      case "point":
+      case "curve":
+      case "face":
+      case "normal":
+        deps.add(n.id);
+        break;
+      case "tangent":
+        deps.add(n.from);
+        deps.add(n.to);
+        break;
+      case "best_face":
+        deps.add(n.id);
+        deps.add(n.towards);
+        break;
     }
   };
   const c: any = comp;
@@ -36,70 +51,110 @@ function refDeps(comp: Component): string[] {
   collect(c.from);
   collect(c.to);
   if (Array.isArray(c.via)) c.via.forEach(collect);
-  return [...new Set(deps)];
+  if (Array.isArray(c.path)) {
+    c.path.forEach((p: any) => {
+      if (p && typeof p === "object" && "wrap" in p) deps.add(p.wrap);
+      else collect(p);
+    });
+  }
+  if (comp.type === "local_frame") deps.add((comp as any).of);
+  if (comp.type === "projection") {
+    deps.add((comp as any).force);
+    const ontoId = String((comp as any).onto).split(".")[0];
+    deps.add(ontoId);
+  }
+  return [...deps];
 }
 
-function resolvePoint(
-  v: { x: number; y: number } | AnchorRef | undefined,
+/**
+ * Resolve a point-or-ref to world coordinates.
+ * Public API used by renderers.
+ */
+export function resolvePoint(
+  v: { x: number; y: number } | NormRef | any | undefined,
   resolved: Map<string, Resolved>,
   fallback: Point = { x: 0, y: 0 },
 ): Point {
   if (!v) return fallback;
   if (!isRef(v)) return { x: v.x, y: v.y };
-  const [id, name, ...rest] = v.ref.split(".");
-  // handle "tangent_to:X"
-  const tangentMatch = v.ref.match(/^([\w-]+)\.tangent_to:([\w-]+)$/);
-  if (tangentMatch) {
-    const [, pulleyId, otherId] = tangentMatch;
-    const pulley = resolved.get(pulleyId);
-    const other = resolved.get(otherId);
-    if (!pulley || !other) return fallback;
-    return tangentPoint(pulley, other);
-  }
-  const target = resolved.get(id);
-  if (!target) return fallback;
-  const a = target.anchors[name];
-  let p: Point;
-  if (typeof a === "function") p = a(v.t);
-  else if (a) p = a;
-  else p = target.origin;
-  if (v.offset) p = { x: p.x + v.offset.x, y: p.y + v.offset.y };
+  const n = normalizeRef(v);
+  if (!n) return fallback;
+  const p = resolveNormRef(n, resolved);
+  if (!p) return fallback;
+  if (n.offset) return { x: p.x + n.offset.x, y: p.y + n.offset.y };
   return p;
 }
 
-/** Compute the tangent contact point on a pulley for a rope going to "other" anchor cog. */
-function tangentPoint(pulley: Resolved, other: Resolved): Point {
-  const r = pulley.data.r as number;
-  const c = pulley.origin;
-  const t = (other.anchors.cog as Point) ?? other.origin;
-  const dx = t.x - c.x;
-  const dy = t.y - c.y;
-  const d = Math.hypot(dx, dy);
-  if (d <= r) return c;
-  // angle from pulley center to target
-  const theta = Math.atan2(dy, dx);
-  // tangent angle offset
-  const alpha = Math.acos(r / d);
-  // Two tangent points, pick the one on the upper side (closer to top)
-  const a1 = theta + alpha;
-  const a2 = theta - alpha;
-  const p1 = { x: c.x + r * Math.cos(a1), y: c.y + r * Math.sin(a1) };
-  const p2 = { x: c.x + r * Math.cos(a2), y: c.y + r * Math.sin(a2) };
-  return p1.y >= p2.y ? p1 : p2;
-}
-
-function inclineRotationAt(incline: Resolved): number {
-  // Returns angle of surface in degrees
-  const { sx, sy } = incline.data;
-  return (Math.atan2(sy, sx) * 180) / Math.PI;
+function resolveNormRef(n: NormRef, resolved: Map<string, Resolved>): Point | null {
+  switch (n.kind) {
+    case "point": {
+      const target = resolved.get(n.id);
+      if (!target) return null;
+      const a = target.anchors[n.anchor];
+      if (typeof a === "function") return a();
+      if (a) return { x: (a as Point).x, y: (a as Point).y };
+      return target.origin;
+    }
+    case "curve": {
+      const target = resolved.get(n.id);
+      if (!target) return null;
+      const a = target.anchors[n.curve];
+      if (typeof a === "function") return a(n.t);
+      if (a) return { x: (a as Point).x, y: (a as Point).y };
+      return target.origin;
+    }
+    case "face": {
+      const target = resolved.get(n.id);
+      if (!target) return null;
+      const key = `face_${n.face}_center`;
+      const a = target.anchors[key] ?? target.anchors[n.face];
+      if (typeof a === "function") return a();
+      if (a) return { x: (a as Point).x, y: (a as Point).y };
+      return target.origin;
+    }
+    case "normal": {
+      const target = resolved.get(n.id);
+      if (!target) return null;
+      // returns a point along normal from cog
+      const cog = (target.anchors.cog ?? target.origin) as Point;
+      const nrm = (target.data?.normal as Point) ?? { x: 0, y: 1 };
+      return { x: cog.x + nrm.x * n.length, y: cog.y + nrm.y * n.length };
+    }
+    case "tangent": {
+      // n.from = pulley id, n.to = external object id (legacy semantics)
+      const pulley = resolved.get(n.from);
+      const other = resolved.get(n.to);
+      if (!pulley || !other) return null;
+      const r = pulley.data.r as number;
+      const c = pulley.origin;
+      const target = ((other.anchors.cog as Point) ?? other.origin);
+      const t = pickTangent(target, c, r, n.side === "upper" || n.side === "lower" ? n.side : "auto", target);
+      return t ?? c;
+    }
+    case "best_face": {
+      const obj = resolved.get(n.id);
+      const target = resolved.get(n.towards);
+      if (!obj || !target) return null;
+      const faces = obj.data?.faces as Record<string, { center: Point; normal: Point }> | undefined;
+      if (!faces) return obj.origin;
+      const dir = norm(sub(target.origin, obj.origin));
+      let best: { center: Point; score: number } | null = null;
+      for (const f of Object.values(faces)) {
+        const s = dot(f.normal, dir);
+        if (!best || s > best.score) best = { center: f.center, score: s };
+      }
+      return best?.center ?? obj.origin;
+    }
+  }
 }
 
 export function resolveSchema(schema: Schema): ResolveResult {
   const errors: string[] = [];
+  const warnings: string[] = [];
   const resolved = new Map<string, Resolved>();
   const order: string[] = [];
 
-  // Topological sort
+  // ─── PASS 1 + 2: Topological sort + placement + derived geometry (anchors) ──
   const map = new Map(schema.components.map((c) => [c.id, c] as const));
   const visited = new Set<string>();
   const visiting = new Set<string>();
@@ -124,51 +179,44 @@ export function resolveSchema(schema: Schema): ResolveResult {
   };
   for (const c of schema.components) visit(c.id);
 
-  // Build resolved entries
   for (const comp of sorted) {
     order.push(comp.id);
     const c: any = comp;
     switch (comp.type) {
-      case "ground": {
-        const origin = resolvePoint(c.at, resolved);
-        resolved.set(comp.id, buildGround(comp, origin));
+      case "ground":
+        resolved.set(comp.id, buildGround(comp, resolvePoint(c.at, resolved)));
         break;
-      }
-      case "wall": {
-        const origin = resolvePoint(c.at, resolved);
-        resolved.set(comp.id, buildWall(comp, origin));
+      case "wall":
+        resolved.set(comp.id, buildWall(comp, resolvePoint(c.at, resolved)));
         break;
-      }
-      case "incline": {
-        const origin = resolvePoint(c.anchor ?? c.at, resolved);
-        resolved.set(comp.id, buildIncline(comp, origin));
+      case "incline":
+        resolved.set(comp.id, buildIncline(comp, resolvePoint(c.anchor ?? c.at, resolved)));
         break;
-      }
       case "block": {
         const origin = resolvePoint(c.anchor ?? c.at, resolved);
         let rotation = 0;
-        if (c.rotation === "auto" && isRef(c.anchor)) {
-          const targetId = c.anchor.ref.split(".")[0];
-          const target = resolved.get(targetId);
-          if (target?.type === "incline") rotation = inclineRotationAt(target);
+        if (c.rotation === "auto" && (c.anchor || c.at)) {
+          const rawRef = c.anchor ?? c.at;
+          const n = normalizeRef(rawRef);
+          if (n && (n.kind === "point" || n.kind === "curve" || n.kind === "face")) {
+            const t = resolved.get(n.id);
+            if (t?.type === "incline") {
+              rotation = ((Math.atan2(t.data.sy, t.data.sx) * 180) / Math.PI);
+            }
+          }
         } else if (typeof c.rotation === "number") {
           rotation = c.rotation;
         }
         resolved.set(comp.id, buildBlock(comp, origin, rotation));
         break;
       }
-      case "sphere": {
-        const origin = resolvePoint(c.anchor ?? c.at, resolved);
-        resolved.set(comp.id, buildSphere(comp, origin));
+      case "sphere":
+        resolved.set(comp.id, buildSphere(comp, resolvePoint(c.anchor ?? c.at, resolved)));
         break;
-      }
-      case "pulley": {
-        const origin = resolvePoint(c.anchor ?? c.at, resolved);
-        resolved.set(comp.id, buildPulley(comp, origin));
+      case "pulley":
+        resolved.set(comp.id, buildPulley(comp, resolvePoint(c.anchor ?? c.at, resolved)));
         break;
-      }
-      // Link / vector / annotation types: no spatial origin to register, resolve at render time
-      default: {
+      default:
         resolved.set(comp.id, {
           id: comp.id,
           type: comp.type,
@@ -178,11 +226,14 @@ export function resolveSchema(schema: Schema): ResolveResult {
           anchors: {},
           data: {},
         });
-      }
     }
   }
 
-  return { resolved, order, errors };
-}
+  // ─── PASS 3: Constraint solving ─────────────────────────────────────────────
+  const facts = solveConstraints(schema.constraints, { resolved, warnings });
 
-export { resolvePoint };
+  // ─── PASS 6: Auto forces ────────────────────────────────────────────────────
+  const autoForces = generateAutoForces(resolved, schema.components);
+
+  return { resolved, order, errors, warnings, facts, autoForces };
+}
