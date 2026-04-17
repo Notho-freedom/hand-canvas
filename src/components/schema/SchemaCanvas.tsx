@@ -1,7 +1,10 @@
 import { useMemo } from "react";
-import type { Schema } from "@/types/schema";
+import type { Schema, Point } from "@/types/schema";
+import { normalizeRef } from "@/types/schema";
 import { resolveSchema, resolvePoint } from "@/engine/resolver";
 import { worldToScreen, viewBox, worldLen } from "@/engine/frame";
+import { buildRopePath, ropePathToSVG, ropeWaypointsFromSpec } from "@/engine/ropes";
+import { norm, sub, perp, dot, snap } from "@/engine/geometry";
 import Frame from "./Frame";
 
 interface Props {
@@ -13,10 +16,41 @@ interface Props {
 }
 
 export default function SchemaCanvas({ schema, showAxes, showGrid, showLabels, showAnchors }: Props) {
-  const { resolved, order, errors } = useMemo(() => resolveSchema(schema), [schema]);
+  const { resolved, order, errors, facts, autoForces } = useMemo(() => resolveSchema(schema), [schema]);
   const frame = schema.frame;
-  const W2S = (p: { x: number; y: number }) => worldToScreen(p, frame);
+  const W2S = (p: Point) => worldToScreen(p, frame);
   const L = (l: number) => worldLen(l, frame);
+  const yAxisUp = frame.yAxis === "up";
+
+  const renderArrow = (
+    key: string,
+    at: Point,
+    dxw: number,
+    dyw: number,
+    color: string,
+    label?: string,
+    sw = 1.8,
+  ) => {
+    const tip = { x: at.x + dxw, y: at.y + dyw };
+    const pA = W2S(at);
+    const pB = W2S(tip);
+    const markerId = `arrow-${key}`;
+    const lx = pB.x + (pB.x - pA.x) * 0.05 + 6;
+    const ly = pB.y + (pB.y - pA.y) * 0.05 - 4;
+    return (
+      <g key={key}>
+        <defs>
+          <marker id={markerId} viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill={color} />
+          </marker>
+        </defs>
+        <line x1={pA.x} y1={pA.y} x2={pB.x} y2={pB.y} stroke={color} strokeWidth={sw} markerEnd={`url(#${markerId})`} />
+        {label && (
+          <text x={lx} y={ly} fontSize={11} fontFamily="monospace" fill={color} fontWeight="bold">{label}</text>
+        )}
+      </g>
+    );
+  };
 
   const renderComp = (id: string) => {
     const r = resolved.get(id);
@@ -26,14 +60,13 @@ export default function SchemaCanvas({ schema, showAxes, showGrid, showLabels, s
     const fill = c.style?.fill ?? "hsl(var(--muted))";
     const sw = c.style?.strokeWidth ?? 1.5;
     const op = c.style?.opacity ?? 1;
+    const dashed = c.style?.dashed;
 
     switch (r.type) {
       case "ground": {
-        const left = W2S(r.anchors.left as any);
-        const right = W2S(r.anchors.right as any);
-        const thick = L(r.data.thick);
+        const left = W2S(r.anchors.left as Point);
+        const right = W2S(r.anchors.right as Point);
         const len = right.x - left.x;
-        // hatching below ground line
         const hatchSpacing = 8;
         const hatches = [];
         for (let x = 0; x < len; x += hatchSpacing) {
@@ -49,14 +82,24 @@ export default function SchemaCanvas({ schema, showAxes, showGrid, showLabels, s
         );
       }
       case "wall": {
-        const bottom = W2S(r.anchors.bottom as any);
-        const top = W2S(r.anchors.top as any);
+        const bottom = W2S(r.anchors.bottom as Point);
+        const top = W2S(r.anchors.top as Point);
         const len = bottom.y - top.y;
+        const side = r.data.side ?? 1;
         const hatchSpacing = 8;
         const hatches = [];
         for (let y = 0; y < len; y += hatchSpacing) {
           hatches.push(
-            <line key={y} x1={bottom.x} y1={top.y + y} x2={bottom.x - 8} y2={top.y + y - 6} stroke={stroke} strokeWidth={0.6} opacity={0.7} />,
+            <line
+              key={y}
+              x1={bottom.x}
+              y1={top.y + y}
+              x2={bottom.x - 8 * side}
+              y2={top.y + y - 6}
+              stroke={stroke}
+              strokeWidth={0.6}
+              opacity={0.7}
+            />,
           );
         }
         return (
@@ -67,11 +110,10 @@ export default function SchemaCanvas({ schema, showAxes, showGrid, showLabels, s
         );
       }
       case "incline": {
-        const foot = W2S(r.anchors.foot as any);
-        const top = W2S(r.anchors.top as any);
+        const foot = W2S(r.anchors.foot as Point);
+        const top = W2S(r.anchors.top as Point);
         const base = { x: top.x, y: foot.y };
         const path = `M ${foot.x} ${foot.y} L ${top.x} ${top.y} L ${base.x} ${base.y} Z`;
-        // hatching under hypotenuse
         return (
           <g key={id} opacity={op}>
             <path d={path} fill={fill} fillOpacity={0.18} stroke={stroke} strokeWidth={sw} />
@@ -122,36 +164,67 @@ export default function SchemaCanvas({ schema, showAxes, showGrid, showLabels, s
         );
       }
       case "rope": {
-        const from = W2S(resolvePoint(c.from, resolved));
-        const to = W2S(resolvePoint(c.to, resolved));
-        const via = (c.via ?? []).map((v: any) => W2S(resolvePoint(v, resolved)));
-        const pts = [from, ...via, to];
-        const d = pts.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`).join(" ");
+        // Build waypoints from explicit path[] OR legacy from/via/to
+        let entries: any[] = [];
+        if (Array.isArray(c.path) && c.path.length) {
+          entries = c.path.map((p: any) => {
+            if (p && typeof p === "object" && "wrap" in p) return p;
+            return { kind: "point" as const, p: resolvePoint(p, resolved) };
+          });
+        } else {
+          if (c.from) entries.push({ kind: "point" as const, p: resolvePoint(c.from, resolved) });
+          for (const v of c.via ?? []) entries.push({ kind: "point" as const, p: resolvePoint(v, resolved) });
+          if (c.to) entries.push({ kind: "point" as const, p: resolvePoint(c.to, resolved) });
+        }
+        const waypoints = ropeWaypointsFromSpec(entries, (id: string) => resolved.get(id));
+        const path = buildRopePath(waypoints);
+        const d = ropePathToSVG(path, W2S, L, yAxisUp);
+        if (!d) {
+          // fallback: simple polyline
+          const pts = entries
+            .filter((e: any) => e.kind === "point")
+            .map((e: any) => W2S(e.p));
+          const dd = pts.map((p: Point, i: number) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`).join(" ");
+          return <path key={id} d={dd} fill="none" stroke={stroke} strokeWidth={sw} opacity={op} />;
+        }
         return <path key={id} d={d} fill="none" stroke={stroke} strokeWidth={sw} opacity={op} />;
       }
       case "spring": {
-        const from = resolvePoint(c.from, resolved);
-        const to = resolvePoint(c.to, resolved);
-        const a = W2S(from), b = W2S(to);
+        const fromW = resolvePoint(c.from, resolved);
+        const toW = resolvePoint(c.to, resolved);
+        // Constraint-aware axis: if fact.axis is set, project so axis is enforced
+        const fact = facts.get(id);
+        let axis = norm(sub(toW, fromW));
+        if (fact?.axis) axis = norm(fact.axis);
+        // Project endpoints onto axis through midpoint to enforce direction
+        const mid = { x: (fromW.x + toW.x) / 2, y: (fromW.y + toW.y) / 2 };
+        const lenAxis = Math.hypot(toW.x - fromW.x, toW.y - fromW.y);
+        const a = fact?.axis
+          ? { x: snap(mid.x - axis.x * lenAxis / 2), y: snap(mid.y - axis.y * lenAxis / 2) }
+          : fromW;
+        const b = fact?.axis
+          ? { x: snap(mid.x + axis.x * lenAxis / 2), y: snap(mid.y + axis.y * lenAxis / 2) }
+          : toW;
+        const A = W2S(a), B = W2S(b);
         const coils = c.params?.coils ?? 8;
         const width = L(c.params?.width ?? 0.15);
-        const dx = b.x - a.x, dy = b.y - a.y;
-        const len = Math.hypot(dx, dy);
+        const dx = B.x - A.x, dy = B.y - A.y;
+        const len = Math.hypot(dx, dy) || 1;
         const ux = dx / len, uy = dy / len;
-        const px = -uy, py = ux; // perpendicular
-        const pad = 12; // straight ends
+        const px = -uy, py = ux;
+        const pad = 12;
         const usable = Math.max(0, len - 2 * pad);
         const pts: string[] = [];
-        pts.push(`M ${a.x} ${a.y}`);
-        pts.push(`L ${a.x + ux * pad} ${a.y + uy * pad}`);
+        pts.push(`M ${A.x} ${A.y}`);
+        pts.push(`L ${A.x + ux * pad} ${A.y + uy * pad}`);
         const seg = usable / coils;
         for (let i = 0; i < coils; i++) {
           const t1 = pad + (i + 0.5) * seg;
           const side = i % 2 === 0 ? 1 : -1;
-          pts.push(`L ${a.x + ux * t1 + px * width * side} ${a.y + uy * t1 + py * width * side}`);
+          pts.push(`L ${A.x + ux * t1 + px * width * side} ${A.y + uy * t1 + py * width * side}`);
         }
-        pts.push(`L ${a.x + ux * (pad + usable)} ${a.y + uy * (pad + usable)}`);
-        pts.push(`L ${b.x} ${b.y}`);
+        pts.push(`L ${A.x + ux * (pad + usable)} ${A.y + uy * (pad + usable)}`);
+        pts.push(`L ${B.x} ${B.y}`);
         return <path key={id} d={pts.join(" ")} fill="none" stroke={stroke} strokeWidth={sw} opacity={op} />;
       }
       case "rigid_rod": {
@@ -163,7 +236,7 @@ export default function SchemaCanvas({ schema, showAxes, showGrid, showLabels, s
       case "velocity":
       case "acceleration": {
         const at = resolvePoint(c.at, resolved);
-        const v = c.vector;
+        const v = c.vector ?? {};
         let dxw = 0, dyw = 0;
         const baseMag = Math.max(0.6, Math.min(2, (v.magnitude ?? 1) / 50));
         if (typeof v.dx === "number" || typeof v.dy === "number") {
@@ -179,32 +252,13 @@ export default function SchemaCanvas({ schema, showAxes, showGrid, showLabels, s
           else if (dir === "right") dxw = baseMag;
           else if (dir === "left") dxw = -baseMag;
         }
-        const tip = { x: at.x + dxw, y: at.y + dyw };
-        const pA = W2S(at);
-        const pB = W2S(tip);
         const colorMap: Record<string, string> = {
           force: "hsl(0, 80%, 60%)",
           velocity: "hsl(140, 70%, 50%)",
           acceleration: "hsl(35, 90%, 55%)",
         };
         const color = c.style?.stroke ?? colorMap[r.type];
-        const markerId = `arrow-${r.type}-${id}`;
-        // label positioning slightly past tip
-        const lx = pB.x + (pB.x - pA.x) * 0.05 + 6;
-        const ly = pB.y + (pB.y - pA.y) * 0.05 - 4;
-        return (
-          <g key={id} opacity={op}>
-            <defs>
-              <marker id={markerId} viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-                <path d="M 0 0 L 10 5 L 0 10 z" fill={color} />
-              </marker>
-            </defs>
-            <line x1={pA.x} y1={pA.y} x2={pB.x} y2={pB.y} stroke={color} strokeWidth={sw + 0.5} markerEnd={`url(#${markerId})`} />
-            {(c.label || showLabels) && c.label && (
-              <text x={lx} y={ly} fontSize={11} fontFamily="monospace" fill={color} fontWeight="bold">{c.label}</text>
-            )}
-          </g>
-        );
+        return renderArrow(`${r.type}-${id}`, at, dxw, dyw, color, c.label, sw + 0.5);
       }
       case "axis": {
         const at = resolvePoint(c.at, resolved);
@@ -227,11 +281,8 @@ export default function SchemaCanvas({ schema, showAxes, showGrid, showLabels, s
       }
       case "angle_arc": {
         const at = resolvePoint(c.at, resolved);
-        const rad = L(c.params.radius);
         const a1 = (c.params.from * Math.PI) / 180;
         const a2 = (c.params.to * Math.PI) / 180;
-        const center = W2S(at);
-        // SVG arc: y is flipped vs math; build polyline
         const N = 24;
         const pts: string[] = [];
         for (let i = 0; i <= N; i++) {
@@ -281,6 +332,94 @@ export default function SchemaCanvas({ schema, showAxes, showGrid, showLabels, s
           </g>
         );
       }
+      case "local_frame": {
+        const obj = resolved.get(c.of);
+        if (!obj) return null;
+        const originName: string = c.origin ?? "cog";
+        const origin = (obj.anchors[originName] as Point) ?? obj.origin;
+        const length = c.length ?? 0.6;
+        let ux: Point, uy: Point;
+        if (c.mode === "world_aligned") {
+          ux = { x: 1, y: 0 };
+          uy = { x: 0, y: 1 };
+        } else {
+          ux = obj.data?.tangent ?? { x: 1, y: 0 };
+          uy = obj.data?.normal ?? { x: 0, y: 1 };
+        }
+        const tipX = { x: origin.x + ux.x * length, y: origin.y + ux.y * length };
+        const tipY = { x: origin.x + uy.x * length, y: origin.y + uy.y * length };
+        const O = W2S(origin), Xp = W2S(tipX), Yp = W2S(tipY);
+        const mkId = (s: string) => `lf-${id}-${s}`;
+        const color = c.style?.stroke ?? "hsl(var(--accent))";
+        const labels = c.axes ?? ["x'", "y'"];
+        return (
+          <g key={id} opacity={op}>
+            <defs>
+              <marker id={mkId("arr")} viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill={color} />
+              </marker>
+            </defs>
+            <line x1={O.x} y1={O.y} x2={Xp.x} y2={Xp.y} stroke={color} strokeWidth={1} strokeDasharray="3 2" markerEnd={`url(#${mkId("arr")})`} />
+            <line x1={O.x} y1={O.y} x2={Yp.x} y2={Yp.y} stroke={color} strokeWidth={1} strokeDasharray="3 2" markerEnd={`url(#${mkId("arr")})`} />
+            <text x={Xp.x + 4} y={Xp.y + 4} fontSize={10} fontFamily="monospace" fill={color}>{labels[0]}</text>
+            <text x={Yp.x + 4} y={Yp.y - 4} fontSize={10} fontFamily="monospace" fill={color}>{labels[1]}</text>
+          </g>
+        );
+      }
+      case "projection": {
+        // c.force is a force component id; c.onto is "blockId.frame" or blockId
+        const forceComp = schema.components.find((cc) => cc.id === c.force) as any;
+        if (!forceComp) return null;
+        const at = resolvePoint(forceComp.at, resolved);
+        // build force vector in world units
+        const v = forceComp.vector ?? {};
+        const baseMag = Math.max(0.6, Math.min(2, (v.magnitude ?? 1) / 50));
+        let dxw = 0, dyw = 0;
+        if (typeof v.dx === "number" || typeof v.dy === "number") {
+          dxw = v.dx ?? 0; dyw = v.dy ?? 0;
+        } else if (typeof v.angle === "number") {
+          const a = (v.angle * Math.PI) / 180;
+          dxw = Math.cos(a) * baseMag; dyw = Math.sin(a) * baseMag;
+        } else {
+          const dir = v.direction ?? "up";
+          if (dir === "up") dyw = baseMag;
+          else if (dir === "down") dyw = -baseMag;
+          else if (dir === "right") dxw = baseMag;
+          else if (dir === "left") dxw = -baseMag;
+        }
+        const ontoId = String(c.onto).split(".")[0];
+        const obj = resolved.get(ontoId);
+        if (!obj) return null;
+        const ux = obj.data?.tangent ?? { x: 1, y: 0 };
+        const uy = obj.data?.normal ?? { x: 0, y: 1 };
+        const F = { x: dxw, y: dyw };
+        const sx = dot(F, norm(ux));
+        const sy = dot(F, norm(uy));
+        const labels = c.labels ?? [`${forceComp.label ?? "F"}x`, `${forceComp.label ?? "F"}y`];
+        const color = c.style?.stroke ?? "hsl(35, 90%, 55%)";
+        const components = c.components ?? ["x", "y"];
+        const out: JSX.Element[] = [];
+        if (components.includes("x")) {
+          const tipX = { x: at.x + ux.x * sx, y: at.y + ux.y * sx };
+          out.push(
+            <g key="px">{renderArrow(`projx-${id}`, at, ux.x * sx, ux.y * sx, color, labels[0], 1.2)}</g>,
+          );
+          // dashed connector to F tip
+          const Ftip = W2S({ x: at.x + dxw, y: at.y + dyw });
+          const X = W2S(tipX);
+          out.push(<line key="dx" x1={X.x} y1={X.y} x2={Ftip.x} y2={Ftip.y} stroke={color} strokeWidth={0.7} strokeDasharray="2 3" opacity={0.7} />);
+        }
+        if (components.includes("y")) {
+          const tipY = { x: at.x + uy.x * sy, y: at.y + uy.y * sy };
+          out.push(
+            <g key="py">{renderArrow(`projy-${id}`, at, uy.x * sy, uy.y * sy, color, labels[1], 1.2)}</g>,
+          );
+          const Ftip = W2S({ x: at.x + dxw, y: at.y + dyw });
+          const Y = W2S(tipY);
+          out.push(<line key="dy" x1={Y.x} y1={Y.y} x2={Ftip.x} y2={Ftip.y} stroke={color} strokeWidth={0.7} strokeDasharray="2 3" opacity={0.7} />);
+        }
+        return <g key={id} opacity={op}>{out}</g>;
+      }
       default:
         return null;
     }
@@ -289,9 +428,9 @@ export default function SchemaCanvas({ schema, showAxes, showGrid, showLabels, s
   const anchorDots = showAnchors
     ? Array.from(resolved.values()).flatMap((r) =>
         Object.entries(r.anchors)
-          .filter(([, v]) => typeof v !== "function")
+          .filter(([name, v]) => typeof v !== "function" && !name.startsWith("normal"))
           .map(([name, v]) => {
-            const p = W2S(v as any);
+            const p = W2S(v as Point);
             return (
               <g key={`${r.id}-${name}`}>
                 <circle cx={p.x} cy={p.y} r={2} fill="hsl(var(--accent))" />
@@ -304,11 +443,16 @@ export default function SchemaCanvas({ schema, showAxes, showGrid, showLabels, s
       )
     : null;
 
+  const autoForceEls = autoForces.map((af) =>
+    renderArrow(`af-${af.id}`, af.at, af.dx, af.dy, af.color, af.label, 1.8),
+  );
+
   return (
     <div className="relative w-full h-full bg-background">
       <svg viewBox={viewBox(frame)} className="w-full h-full" preserveAspectRatio="xMidYMid meet">
         <Frame frame={frame} showAxes={showAxes} showGrid={showGrid} />
         {order.map(renderComp)}
+        {autoForceEls}
         {anchorDots}
       </svg>
       {errors.length > 0 && (
