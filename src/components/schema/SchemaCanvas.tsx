@@ -1,11 +1,11 @@
 import { useMemo } from "react";
 import type { Schema, Point } from "@/types/schema";
-import { normalizeRef } from "@/types/schema";
 import { resolveSchema, resolvePoint } from "@/engine/resolver";
 import { worldToScreen, viewBox, worldLen } from "@/engine/frame";
 import { buildRopePath, ropePathToSVG, ropeWaypointsFromSpec } from "@/engine/ropes";
-import { norm, sub, perp, dot, snap } from "@/engine/geometry";
+import { norm, sub, dot, snap } from "@/engine/geometry";
 import Frame from "./Frame";
+import type { AnimationState } from "@/hooks/useAnimation";
 
 interface Props {
   schema: Schema;
@@ -13,14 +13,39 @@ interface Props {
   showGrid: boolean;
   showLabels: boolean;
   showAnchors: boolean;
+  animState?: AnimationState;
 }
 
-export default function SchemaCanvas({ schema, showAxes, showGrid, showLabels, showAnchors }: Props) {
-  const { resolved, order, errors, facts, autoForces } = useMemo(() => resolveSchema(schema), [schema]);
+export default function SchemaCanvas({ schema, showAxes, showGrid, showLabels, showAnchors, animState }: Props) {
+  // Apply animation overrides to components before resolving
+  const effectiveSchema = useMemo(() => {
+    if (!animState || animState.overrides.size === 0) return schema;
+    const components = schema.components.map((c) => {
+      const ov = animState.overrides.get(c.id);
+      if (!ov || typeof ov.tValue !== "number" || !ov.along) return c;
+      const [targetId, curveName] = ov.along.split(".");
+      // Override anchor with curve(t)
+      const newAnchor = { kind: "curve" as const, id: targetId, curve: curveName, t: ov.tValue };
+      return { ...c, anchor: newAnchor } as any;
+    });
+    return { ...schema, components };
+  }, [schema, animState?.overrides]);
+
+  const { resolved, order, errors, facts, autoForces } = useMemo(
+    () => resolveSchema(effectiveSchema),
+    [effectiveSchema],
+  );
   const frame = schema.frame;
   const W2S = (p: Point) => worldToScreen(p, frame);
   const L = (l: number) => worldLen(l, frame);
   const yAxisUp = frame.yAxis === "up";
+
+  const initiallyHidden = (schema as any).animation?.initiallyHidden ?? [];
+  const isVisible = (id: string): boolean => {
+    if (!animState) return true;
+    if (!initiallyHidden.includes(id)) return true;
+    return animState.visibleIds.has(id);
+  };
 
   const renderArrow = (
     key: string,
@@ -53,6 +78,7 @@ export default function SchemaCanvas({ schema, showAxes, showGrid, showLabels, s
   };
 
   const renderComp = (id: string) => {
+    if (!isVisible(id)) return null;
     const r = resolved.get(id);
     if (!r) return null;
     const c: any = r.raw;
@@ -60,7 +86,6 @@ export default function SchemaCanvas({ schema, showAxes, showGrid, showLabels, s
     const fill = c.style?.fill ?? "hsl(var(--muted))";
     const sw = c.style?.strokeWidth ?? 1.5;
     const op = c.style?.opacity ?? 1;
-    const dashed = c.style?.dashed;
 
     switch (r.type) {
       case "ground": {
@@ -90,16 +115,8 @@ export default function SchemaCanvas({ schema, showAxes, showGrid, showLabels, s
         const hatches = [];
         for (let y = 0; y < len; y += hatchSpacing) {
           hatches.push(
-            <line
-              key={y}
-              x1={bottom.x}
-              y1={top.y + y}
-              x2={bottom.x - 8 * side}
-              y2={top.y + y - 6}
-              stroke={stroke}
-              strokeWidth={0.6}
-              opacity={0.7}
-            />,
+            <line key={y} x1={bottom.x} y1={top.y + y} x2={bottom.x - 8 * side} y2={top.y + y - 6}
+              stroke={stroke} strokeWidth={0.6} opacity={0.7} />,
           );
         }
         return (
@@ -164,7 +181,6 @@ export default function SchemaCanvas({ schema, showAxes, showGrid, showLabels, s
         );
       }
       case "rope": {
-        // Build waypoints from explicit path[] OR legacy from/via/to
         let entries: any[] = [];
         if (Array.isArray(c.path) && c.path.length) {
           entries = c.path.map((p: any) => {
@@ -180,23 +196,50 @@ export default function SchemaCanvas({ schema, showAxes, showGrid, showLabels, s
         const path = buildRopePath(waypoints);
         const d = ropePathToSVG(path, W2S, L, yAxisUp);
         if (!d) {
-          // fallback: simple polyline
-          const pts = entries
-            .filter((e: any) => e.kind === "point")
-            .map((e: any) => W2S(e.p));
+          const pts = entries.filter((e: any) => e.kind === "point").map((e: any) => W2S(e.p));
           const dd = pts.map((p: Point, i: number) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`).join(" ");
           return <path key={id} d={dd} fill="none" stroke={stroke} strokeWidth={sw} opacity={op} />;
         }
         return <path key={id} d={d} fill="none" stroke={stroke} strokeWidth={sw} opacity={op} />;
       }
+      case "pulley_rope_system": {
+        // Generates 2 vertical ropes + top arc on the pulley
+        const pulley = resolved.get(c.pulley);
+        if (!pulley) return null;
+        const rad = pulley.data.r;
+        const leftAttachP = resolvePoint(c.leftAttach, resolved);
+        const rightAttachP = resolvePoint(c.rightAttach, resolved);
+        const leftContact = { x: pulley.origin.x - rad, y: pulley.origin.y };
+        const rightContact = { x: pulley.origin.x + rad, y: pulley.origin.y };
+        // Force vertical: align attach.x with contact.x
+        const leftFrom = { x: leftContact.x, y: leftAttachP.y };
+        const rightFrom = { x: rightContact.x, y: rightAttachP.y };
+
+        const lA = W2S(leftContact), lB = W2S(leftFrom);
+        const rA = W2S(rightContact), rB = W2S(rightFrom);
+        const radPx = L(rad);
+
+        // Top arc: from leftContact (180°) to rightContact (0°), going through top (90° in math)
+        // In SVG screen coords with y-flipped, sweep adjusts.
+        const arcStart = W2S(leftContact);
+        const arcEnd = W2S(rightContact);
+        const sweepFlag = yAxisUp ? 0 : 1;
+
+        return (
+          <g key={id} opacity={op}>
+            <path d={`M ${arcStart.x} ${arcStart.y} A ${radPx} ${radPx} 0 0 ${sweepFlag} ${arcEnd.x} ${arcEnd.y}`}
+              fill="none" stroke={stroke} strokeWidth={sw} />
+            <line x1={lA.x} y1={lA.y} x2={lB.x} y2={lB.y} stroke={stroke} strokeWidth={sw} />
+            <line x1={rA.x} y1={rA.y} x2={rB.x} y2={rB.y} stroke={stroke} strokeWidth={sw} />
+          </g>
+        );
+      }
       case "spring": {
         const fromW = resolvePoint(c.from, resolved);
         const toW = resolvePoint(c.to, resolved);
-        // Constraint-aware axis: if fact.axis is set, project so axis is enforced
         const fact = facts.get(id);
         let axis = norm(sub(toW, fromW));
         if (fact?.axis) axis = norm(fact.axis);
-        // Project endpoints onto axis through midpoint to enforce direction
         const mid = { x: (fromW.x + toW.x) / 2, y: (fromW.y + toW.y) / 2 };
         const lenAxis = Math.hypot(toW.x - fromW.x, toW.y - fromW.y);
         const a = fact?.axis
@@ -305,11 +348,7 @@ export default function SchemaCanvas({ schema, showAxes, showGrid, showLabels, s
         const at = resolvePoint(c.at, resolved);
         const off = c.params.offset ?? { x: 0, y: 0 };
         const p = W2S({ x: at.x + off.x, y: at.y + off.y });
-        return (
-          <text key={id} x={p.x} y={p.y} fontSize={12} fontFamily="monospace" fill={stroke}>
-            {c.params.text}
-          </text>
-        );
+        return <text key={id} x={p.x} y={p.y} fontSize={12} fontFamily="monospace" fill={stroke}>{c.params.text}</text>;
       }
       case "dimension": {
         const from = resolvePoint(c.from, resolved);
@@ -337,7 +376,8 @@ export default function SchemaCanvas({ schema, showAxes, showGrid, showLabels, s
         if (!obj) return null;
         const originName: string = c.origin ?? "cog";
         const origin = (obj.anchors[originName] as Point) ?? obj.origin;
-        const length = c.length ?? 0.6;
+        const length = c.length ?? 1.2;
+        const bidir = c.bidirectional !== false;
         let ux: Point, uy: Point;
         if (c.mode === "world_aligned") {
           ux = { x: 1, y: 0 };
@@ -346,9 +386,13 @@ export default function SchemaCanvas({ schema, showAxes, showGrid, showLabels, s
           ux = obj.data?.tangent ?? { x: 1, y: 0 };
           uy = obj.data?.normal ?? { x: 0, y: 1 };
         }
-        const tipX = { x: origin.x + ux.x * length, y: origin.y + ux.y * length };
-        const tipY = { x: origin.x + uy.x * length, y: origin.y + uy.y * length };
-        const O = W2S(origin), Xp = W2S(tipX), Yp = W2S(tipY);
+        const tipXp = { x: origin.x + ux.x * length, y: origin.y + ux.y * length };
+        const tipXn = { x: origin.x - ux.x * length, y: origin.y - ux.y * length };
+        const tipYp = { x: origin.x + uy.x * length, y: origin.y + uy.y * length };
+        const tipYn = { x: origin.x - uy.x * length, y: origin.y - uy.y * length };
+        const O = W2S(origin);
+        const Xp = W2S(tipXp), Xn = W2S(tipXn);
+        const Yp = W2S(tipYp), Yn = W2S(tipYn);
         const mkId = (s: string) => `lf-${id}-${s}`;
         const color = c.style?.stroke ?? "hsl(var(--accent))";
         const labels = c.axes ?? ["x'", "y'"];
@@ -359,19 +403,23 @@ export default function SchemaCanvas({ schema, showAxes, showGrid, showLabels, s
                 <path d="M 0 0 L 10 5 L 0 10 z" fill={color} />
               </marker>
             </defs>
-            <line x1={O.x} y1={O.y} x2={Xp.x} y2={Xp.y} stroke={color} strokeWidth={1} strokeDasharray="3 2" markerEnd={`url(#${mkId("arr")})`} />
-            <line x1={O.x} y1={O.y} x2={Yp.x} y2={Yp.y} stroke={color} strokeWidth={1} strokeDasharray="3 2" markerEnd={`url(#${mkId("arr")})`} />
+            {bidir && (
+              <line x1={Xn.x} y1={Xn.y} x2={O.x} y2={O.y} stroke={color} strokeWidth={0.8} strokeDasharray="2 3" opacity={0.7} />
+            )}
+            <line x1={O.x} y1={O.y} x2={Xp.x} y2={Xp.y} stroke={color} strokeWidth={1.1} strokeDasharray="3 2" markerEnd={`url(#${mkId("arr")})`} />
+            {bidir && (
+              <line x1={Yn.x} y1={Yn.y} x2={O.x} y2={O.y} stroke={color} strokeWidth={0.8} strokeDasharray="2 3" opacity={0.7} />
+            )}
+            <line x1={O.x} y1={O.y} x2={Yp.x} y2={Yp.y} stroke={color} strokeWidth={1.1} strokeDasharray="3 2" markerEnd={`url(#${mkId("arr")})`} />
             <text x={Xp.x + 4} y={Xp.y + 4} fontSize={10} fontFamily="monospace" fill={color}>{labels[0]}</text>
             <text x={Yp.x + 4} y={Yp.y - 4} fontSize={10} fontFamily="monospace" fill={color}>{labels[1]}</text>
           </g>
         );
       }
       case "projection": {
-        // c.force is a force component id; c.onto is "blockId.frame" or blockId
-        const forceComp = schema.components.find((cc) => cc.id === c.force) as any;
+        const forceComp = effectiveSchema.components.find((cc) => cc.id === c.force) as any;
         if (!forceComp) return null;
         const at = resolvePoint(forceComp.at, resolved);
-        // build force vector in world units
         const v = forceComp.vector ?? {};
         const baseMag = Math.max(0.6, Math.min(2, (v.magnitude ?? 1) / 50));
         let dxw = 0, dyw = 0;
@@ -398,27 +446,45 @@ export default function SchemaCanvas({ schema, showAxes, showGrid, showLabels, s
         const labels = c.labels ?? [`${forceComp.label ?? "F"}x`, `${forceComp.label ?? "F"}y`];
         const color = c.style?.stroke ?? "hsl(35, 90%, 55%)";
         const components = c.components ?? ["x", "y"];
+        const showRect = c.showRectangle !== false;
         const out: JSX.Element[] = [];
+        const tipX = { x: at.x + ux.x * sx, y: at.y + ux.y * sx };
+        const tipY = { x: at.x + uy.x * sy, y: at.y + uy.y * sy };
+        const Ftip = { x: at.x + dxw, y: at.y + dyw };
         if (components.includes("x")) {
-          const tipX = { x: at.x + ux.x * sx, y: at.y + ux.y * sx };
-          out.push(
-            <g key="px">{renderArrow(`projx-${id}`, at, ux.x * sx, ux.y * sx, color, labels[0], 1.2)}</g>,
-          );
-          // dashed connector to F tip
-          const Ftip = W2S({ x: at.x + dxw, y: at.y + dyw });
-          const X = W2S(tipX);
-          out.push(<line key="dx" x1={X.x} y1={X.y} x2={Ftip.x} y2={Ftip.y} stroke={color} strokeWidth={0.7} strokeDasharray="2 3" opacity={0.7} />);
+          out.push(<g key="px">{renderArrow(`projx-${id}`, at, ux.x * sx, ux.y * sx, color, labels[0], 1.2)}</g>);
         }
         if (components.includes("y")) {
-          const tipY = { x: at.x + uy.x * sy, y: at.y + uy.y * sy };
+          out.push(<g key="py">{renderArrow(`projy-${id}`, at, uy.x * sy, uy.y * sy, color, labels[1], 1.2)}</g>);
+        }
+        if (showRect && components.includes("x") && components.includes("y")) {
+          // Projection rectangle: from F tip drop perpendiculars to axes
+          const Tx = W2S(tipX), Ty = W2S(tipY), F2 = W2S(Ftip);
           out.push(
-            <g key="py">{renderArrow(`projy-${id}`, at, uy.x * sy, uy.y * sy, color, labels[1], 1.2)}</g>,
+            <g key="rect" opacity={0.7}>
+              <line x1={Tx.x} y1={Tx.y} x2={F2.x} y2={F2.y} stroke={color} strokeWidth={0.7} strokeDasharray="2 3" />
+              <line x1={Ty.x} y1={Ty.y} x2={F2.x} y2={F2.y} stroke={color} strokeWidth={0.7} strokeDasharray="2 3" />
+            </g>
           );
-          const Ftip = W2S({ x: at.x + dxw, y: at.y + dyw });
-          const Y = W2S(tipY);
-          out.push(<line key="dy" x1={Y.x} y1={Y.y} x2={Ftip.x} y2={Ftip.y} stroke={color} strokeWidth={0.7} strokeDasharray="2 3" opacity={0.7} />);
         }
         return <g key={id} opacity={op}>{out}</g>;
+      }
+      case "pendulum": {
+        const pivot = resolvePoint(c.pivot, resolved);
+        const angleRad = ((c.params.angle ?? 20) * Math.PI) / 180;
+        const len = c.params.length;
+        // angle from vertical (downward), positive = right
+        const bob = { x: pivot.x + Math.sin(angleRad) * len, y: pivot.y - Math.cos(angleRad) * len };
+        const P = W2S(pivot), B = W2S(bob);
+        const r = L(c.params.bobRadius ?? 0.15);
+        return (
+          <g key={id} opacity={op}>
+            <line x1={P.x} y1={P.y} x2={B.x} y2={B.y} stroke={stroke} strokeWidth={sw} />
+            <circle cx={P.x} cy={P.y} r={3} fill={stroke} />
+            <circle cx={B.x} cy={B.y} r={r} fill="hsl(var(--card))" stroke={stroke} strokeWidth={sw} />
+            {c.label && <text x={B.x + r + 4} y={B.y + 4} fontSize={11} fontFamily="monospace" fill={stroke}>{c.label}</text>}
+          </g>
+        );
       }
       default:
         return null;
@@ -443,9 +509,10 @@ export default function SchemaCanvas({ schema, showAxes, showGrid, showLabels, s
       )
     : null;
 
-  const autoForceEls = autoForces.map((af) =>
-    renderArrow(`af-${af.id}`, af.at, af.dx, af.dy, af.color, af.label, 1.8),
-  );
+  // Filter autoForces by their owner visibility (and self id format <ownerId>__<NAME>)
+  const autoForceEls = autoForces
+    .filter((af) => isVisible(af.ownerId))
+    .map((af) => renderArrow(`af-${af.id}`, af.at, af.dx, af.dy, af.color, af.label, 1.8));
 
   return (
     <div className="relative w-full h-full bg-background">

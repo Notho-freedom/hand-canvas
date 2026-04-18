@@ -2,8 +2,12 @@ import { useMemo, useState } from "react";
 import SchemaCanvas from "@/components/schema/SchemaCanvas";
 import JsonEditor from "@/components/schema/JsonEditor";
 import Toolbar from "@/components/schema/Toolbar";
+import StatementEditor from "@/components/schema/StatementEditor";
+import AnimationControls from "@/components/schema/AnimationControls";
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { EXAMPLES } from "@/data/examples";
 import { SchemaSchema, type Schema } from "@/types/schema";
+import { useAnimation } from "@/hooks/useAnimation";
 
 export default function Index() {
   const [exampleKey, setExampleKey] = useState(EXAMPLES[0].key);
@@ -27,11 +31,15 @@ export default function Index() {
     }
   }, [text]);
 
+  const animation = (schema as any)?.animation;
+  const animControls = useAnimation(animation);
+
   const handleExample = (k: string) => {
     const ex = EXAMPLES.find((e) => e.key === k);
     if (!ex) return;
     setExampleKey(k);
     setText(JSON.stringify(ex.schema, null, 2));
+    animControls.reset();
   };
 
   const onToggle = (k: "axes" | "grid" | "labels" | "anchors" | "fullscreen") => {
@@ -46,15 +54,25 @@ export default function Index() {
     <div className="w-screen h-screen flex flex-col bg-background text-foreground overflow-hidden">
       <header className="px-4 py-2 border-b border-border flex items-center justify-between">
         <h1 className="text-sm font-mono font-semibold tracking-tight">Madox · Moteur de schémas physiques</h1>
-        <span className="text-xs font-mono text-muted-foreground">JSON → repère → schéma précis</span>
+        <span className="text-xs font-mono text-muted-foreground">Énoncé → IA → JSON → schéma précis</span>
       </header>
       <div className="flex-1 flex min-h-0">
         {!fullscreen && (
           <aside className="w-[40%] min-w-[320px] max-w-[640px] border-r border-border flex flex-col">
-            <div className="px-3 py-2 border-b border-border bg-card text-xs font-mono text-muted-foreground">
-              Schéma JSON
-            </div>
-            <JsonEditor value={text} onChange={setText} error={error} />
+            <ResizablePanelGroup direction="vertical">
+              <ResizablePanel defaultSize={40} minSize={20}>
+                <StatementEditor onGenerated={(json) => { setText(json); animControls.reset(); }} />
+              </ResizablePanel>
+              <ResizableHandle withHandle />
+              <ResizablePanel defaultSize={60} minSize={20}>
+                <div className="flex flex-col h-full">
+                  <div className="px-3 py-2 border-b border-border bg-card text-xs font-mono text-muted-foreground">
+                    Schéma JSON
+                  </div>
+                  <JsonEditor value={text} onChange={setText} error={error} />
+                </div>
+              </ResizablePanel>
+            </ResizablePanelGroup>
           </aside>
         )}
         <main className="flex-1 flex flex-col min-w-0">
@@ -69,6 +87,7 @@ export default function Index() {
             onToggle={onToggle}
             onExample={handleExample}
           />
+          <AnimationControls controls={animControls} hasAnimation={!!animation} />
           <div className="flex-1 min-h-0">
             {schema ? (
               <SchemaCanvas
@@ -77,6 +96,7 @@ export default function Index() {
                 showGrid={showGrid}
                 showLabels={showLabels}
                 showAnchors={showAnchors}
+                animState={animation ? animControls.state : undefined}
               />
             ) : (
               <div className="w-full h-full flex items-center justify-center text-muted-foreground font-mono text-sm p-8">
