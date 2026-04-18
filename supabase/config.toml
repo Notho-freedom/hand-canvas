@@ -1,0 +1,4 @@
+project_id = "wjuivexwkuqmqrgalukq"
+
+[functions.generate-schema]
+verify_jwt = false
