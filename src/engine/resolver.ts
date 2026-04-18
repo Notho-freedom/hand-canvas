@@ -63,6 +63,13 @@ function refDeps(comp: Component): string[] {
     const ontoId = String((comp as any).onto).split(".")[0];
     deps.add(ontoId);
   }
+  if (comp.type === "pulley_rope_system") {
+    const cc: any = comp;
+    deps.add(cc.pulley);
+    collect(cc.leftAttach);
+    collect(cc.rightAttach);
+  }
+  if (comp.type === "pendulum") collect((comp as any).pivot);
   return [...deps];
 }
 
