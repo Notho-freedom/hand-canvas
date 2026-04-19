@@ -28,31 +28,51 @@ Tu génères un objet JSON conforme au schéma. RENDS UNIQUEMENT du JSON valide 
 - spring: from, to, params:{coils,width}
 - rigid_rod: from, to
 - force/velocity/acceleration: at, vector:{direction|angle|dx|dy, magnitude}, label
-- axis: at, params:{angle, length, name}
-- angle_arc: at, params:{from, to, radius}, label
-- label: at, params:{text, offset}
-- dimension: from, to, params:{text, offset}
+- axis / angle_arc / label / dimension
 - local_frame: of, origin:"cog", mode:"surface_aligned"|"world_aligned", axes:["x'","y'"], length:1.4, bidirectional:true
 - projection: force, onto:"<solidId>.frame", components:["x","y"], labels:["Px","Py"], showRectangle:true
 - pendulum: pivot, params:{length, angle, bobRadius, mass}
 
 ## Refs : {"ref":"id.anchor"} | {"ref":"id.surface","t":0.5}
-       | {"kind":"face","id":"bloc","face":"top"} | {"kind":"curve","id":"plan","curve":"surface","t":0.5}
+       | {"kind":"face","id":"bloc","face":"top|bottom|left|right"}
+       | {"kind":"curve","id":"plan","curve":"surface","t":0.5}
        | {"kind":"point","id":"bloc","anchor":"cog"}
 
-## constraints : [{"type":"horizontal","object":"ressort"}, {"type":"vertical","object":"corde"}, ...]
+## Vocabulaire FR → composants
+- "sol", "plancher", "table" → ground
+- "mur", "paroi" → wall
+- "plan incliné", "pente", "rampe" → incline
+- "bloc", "solide", "caisse", "masse" (rectangulaire) → block
+- "boule", "sphère", "balle" → sphere
+- "poulie" → pulley
+- "corde", "fil", "câble" → rope
+- "ressort" → spring
+- "tige rigide", "barre" → rigid_rod
+- "pendule" → pendulum
 
-## animation
-{ "duration":6, "autoplay":false, "initiallyHidden":["id1"],
-  "steps":[ {"at":0.5,"show":["id1"]}, {"at":3,"animate":{"id":"bloc","along":"plan.surface","from":0.9,"to":0.05,"duration":2}} ] }
+## RÈGLES STRICTES (systèmes combinés)
 
-## RÈGLES STRICTES
-1. Masse pendue sous poulie → "side":"left"/"right" OU "pulley_rope_system" (cordes STRICTEMENT verticales).
-2. Ressort horizontal → constraint {"type":"horizontal","object":"<id>"} + ALIGNER les hauteurs (mur.height = bloc.h).
-3. Bloc sur plan incliné → "rotation":"auto" + anchor curve:"surface".
-4. Plan incliné = TOUJOURS ajouter local_frame surface_aligned (length>=1.2, bidirectional:true) + force P + projection.
-5. Atwood → "pulley_rope_system" + blocs décalés horizontalement.
-6. Toujours un "ground" sous les systèmes avec gravité.
+### A. Cordes & poulies
+- Masse pendue VERTICALEMENT sous une poulie → \`side:"left"\` ou \`side:"right"\` (corde stricte verticale).
+- Atwood (2 masses + poulie au-dessus) → \`pulley_rope_system\` + blocs DÉCALÉS horizontalement (un sous chaque côté de la poulie).
+- Bloc sur plan incliné relié à une poulie au sommet : la corde sort de \`face:"right"\` (face haute le long du plan, pas \`face:"top"\`), wrap \`side:"auto"\`.
+
+### B. Ressorts
+- Ressort horizontal mur↔bloc : \`face:"left"\` ou \`face:"right"\` du bloc + ancrage \`curve:"surface", t:0.5\` du mur, ALIGNER mur.height = bloc.h, et bloc.at.y = 0. Toujours ajouter \`{type:"horizontal",object:"ressort"}\`.
+- Ressort vertical : utiliser \`face:"top"\` ou \`face:"bottom"\`. Ajouter \`{type:"vertical",object:"ressort"}\`.
+- Bloc entre 2 ressorts : un ressort à gauche (\`face:"left"\` du bloc), un ressort à droite (\`face:"right"\`).
+
+### C. Plan incliné
+- Bloc sur incline : \`rotation:"auto"\` + anchor \`curve:"surface"\`.
+- AJOUTER systématiquement : \`local_frame\` surface_aligned (length≥1.4, bidirectional:true) + force P + projection P sur le frame.
+
+### D. Géométrie
+- Toujours un \`ground\` sous les systèmes avec gravité.
+- Aligner précisément : si bloc B est suspendu sous le côté droit d'une poulie de rayon r en (px,py), alors blocB.at.x = px+r (et w/2 ne décale pas car center).
+
+### E. Animation (optionnel — l'app génère déjà une animation par défaut)
+Format : { "duration":6, "autoplay":false, "initiallyHidden":[ids],
+  "steps":[ {"at":0.5,"show":["id"]}, {"at":3,"animate":{"id":"bloc","along":"plan.surface","from":0.9,"to":0.05,"duration":2}} ] }
 `;
 
 Deno.serve(async (req) => {
