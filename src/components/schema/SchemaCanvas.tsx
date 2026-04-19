@@ -14,9 +14,10 @@ interface Props {
   showLabels: boolean;
   showAnchors: boolean;
   animState?: AnimationState;
+  initiallyHidden?: string[];
 }
 
-export default function SchemaCanvas({ schema, showAxes, showGrid, showLabels, showAnchors, animState }: Props) {
+export default function SchemaCanvas({ schema, showAxes, showGrid, showLabels, showAnchors, animState, initiallyHidden: initiallyHiddenProp }: Props) {
   // Apply animation overrides to components before resolving
   const effectiveSchema = useMemo(() => {
     if (!animState || animState.overrides.size === 0) return schema;
