@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Animation } from "@/types/schema";
 
 export interface AnimationState {
@@ -23,6 +23,12 @@ export function useAnimation(anim: Animation | undefined): AnimationControls {
   const [playing, setPlaying] = useState(false);
   const rafRef = useRef<number | null>(null);
   const lastRef = useRef<number | null>(null);
+
+  // Reset t when the animation reference changes (new schema/example)
+  useEffect(() => {
+    setT(0);
+    setPlaying(false);
+  }, [anim]);
 
   useEffect(() => {
     if (!playing) {
@@ -50,15 +56,10 @@ export function useAnimation(anim: Animation | undefined): AnimationControls {
     };
   }, [playing, duration]);
 
-  // Compute visibility & overrides at current t
-  const visibleIds = new Set<string>();
-  const hiddenInit = new Set(anim?.initiallyHidden ?? []);
-  const overrides = new Map<string, { along?: string; tValue?: number }>();
-
-  if (anim) {
-    for (const id of hiddenInit) visibleIds.add(id); // placeholder; will be removed if still hidden
-    // Visibility: anything in initiallyHidden becomes visible only when a step shows it
-    for (const id of hiddenInit) visibleIds.delete(id);
+  const { visibleIds, overrides } = useMemo(() => {
+    const visibleIds = new Set<string>();
+    const overrides = new Map<string, { along?: string; tValue?: number }>();
+    if (!anim) return { visibleIds, overrides };
 
     for (const step of anim.steps) {
       if (step.at <= t) {
@@ -75,7 +76,8 @@ export function useAnimation(anim: Animation | undefined): AnimationControls {
         }
       }
     }
-  }
+    return { visibleIds, overrides };
+  }, [anim, t]);
 
   return {
     state: { t, playing, duration, visibleIds, overrides },
@@ -86,7 +88,6 @@ export function useAnimation(anim: Animation | undefined): AnimationControls {
   };
 }
 
-/** Returns true if id should render given anim state. */
 export function isVisible(id: string, state: AnimationState, initiallyHidden: string[] | undefined): boolean {
   if (!initiallyHidden || !initiallyHidden.includes(id)) return true;
   return state.visibleIds.has(id);
