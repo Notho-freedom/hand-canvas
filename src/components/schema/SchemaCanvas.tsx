@@ -14,9 +14,10 @@ interface Props {
   showLabels: boolean;
   showAnchors: boolean;
   animState?: AnimationState;
+  initiallyHidden?: string[];
 }
 
-export default function SchemaCanvas({ schema, showAxes, showGrid, showLabels, showAnchors, animState }: Props) {
+export default function SchemaCanvas({ schema, showAxes, showGrid, showLabels, showAnchors, animState, initiallyHidden: initiallyHiddenProp }: Props) {
   // Apply animation overrides to components before resolving
   const effectiveSchema = useMemo(() => {
     if (!animState || animState.overrides.size === 0) return schema;
@@ -40,7 +41,7 @@ export default function SchemaCanvas({ schema, showAxes, showGrid, showLabels, s
   const L = (l: number) => worldLen(l, frame);
   const yAxisUp = frame.yAxis === "up";
 
-  const initiallyHidden = (schema as any).animation?.initiallyHidden ?? [];
+  const initiallyHidden = initiallyHiddenProp ?? (schema as any).animation?.initiallyHidden ?? [];
   const isVisible = (id: string): boolean => {
     if (!animState) return true;
     if (!initiallyHidden.includes(id)) return true;

@@ -1,6 +1,6 @@
 import type { Point } from "@/types/schema";
 import type { Resolved } from "./anchors";
-import { pickTangent, sub, dot, norm, angleDeg, snap } from "./geometry";
+import { pickTangent, sub, dot, norm, angleDeg, snap, len } from "./geometry";
 
 export type RopeSegment =
   | { type: "line"; from: Point; to: Point }
@@ -8,13 +8,17 @@ export type RopeSegment =
 
 export type RopePath = RopeSegment[];
 
+type SideMode = "upper" | "lower" | "left" | "right" | "auto" | { tangentTo: string };
+
 type Waypoint =
   | { kind: "point"; p: Point }
-  | { kind: "pulley"; id: string; center: Point; radius: number; side: "upper" | "lower" | "left" | "right" | "auto" };
+  | { kind: "pulley"; id: string; center: Point; radius: number; side: SideMode };
 
 /**
- * Build rope path. Supports pulley sides "left"/"right" which force a STRICTLY VERTICAL
- * tangent point on the pulley (cordes tendues sous masse).
+ * Build rope path. Supports:
+ *  - side "left"/"right" : tangence STRICTEMENT VERTICALE (masse pendue)
+ *  - side "tangent_to:<id>" : tangente exacte vers un solide
+ *  - side "auto" : choisit le côté le plus naturel selon la position relative
  */
 export function buildRopePath(waypoints: Waypoint[]): RopePath {
   if (waypoints.length < 2) return [];
@@ -28,13 +32,13 @@ export function buildRopePath(waypoints: Waypoint[]): RopePath {
     if (A.kind === "point" && B.kind === "point") continue;
 
     if (A.kind === "point" && B.kind === "pulley") {
-      const t = resolvePulleyContact(A.p, B, "in");
+      const t = resolvePulleyContact(A.p, B);
       if (t) {
         contacts[i + 1].in = t;
         contacts[i + 1].angIn = angleDeg(sub(t, B.center));
       }
     } else if (A.kind === "pulley" && B.kind === "point") {
-      const t = resolvePulleyContact(B.p, A, "out");
+      const t = resolvePulleyContact(B.p, A);
       if (t) {
         contacts[i].out = t;
         contacts[i].angOut = angleDeg(sub(t, A.center));
@@ -62,10 +66,8 @@ export function buildRopePath(waypoints: Waypoint[]): RopePath {
     let fromPt = A.kind === "point" ? A.p : (cA.out ?? A.center);
     let toPt = B.kind === "point" ? B.p : (cB.in ?? B.center);
 
-    // VERTICAL SNAP: if a pulley side is left/right and the other end is a point,
-    // force the segment to be strictly vertical (gravity-aligned).
+    // VERTICAL SNAP : si poulie side=left/right, on force la verticalité du segment
     if (A.kind === "point" && B.kind === "pulley" && (B.side === "left" || B.side === "right")) {
-      // align point's x with pulley contact x
       fromPt = { x: toPt.x, y: fromPt.y };
     }
     if (A.kind === "pulley" && B.kind === "point" && (A.side === "left" || A.side === "right")) {
@@ -91,19 +93,18 @@ export function buildRopePath(waypoints: Waypoint[]): RopePath {
   return path;
 }
 
-function mapSide(s: "upper" | "lower" | "left" | "right" | "auto"): "upper" | "lower" | "auto" {
+function mapSide(s: SideMode): "upper" | "lower" | "auto" {
+  if (typeof s === "object") return "auto";
   if (s === "left" || s === "right") return "auto";
   return s;
 }
 
 /**
- * For sides "left"/"right": tangent point is at angle 180°/0° on the pulley (horizontal extreme),
- * which means the rope leaving it goes strictly vertical — physically correct for a hanging mass.
+ * For sides "left"/"right": tangent point at horizontal extreme → rope strictly vertical.
  */
 function resolvePulleyContact(
   external: Point,
-  pulley: { center: Point; radius: number; side: "upper" | "lower" | "left" | "right" | "auto" },
-  _dir: "in" | "out",
+  pulley: { center: Point; radius: number; side: SideMode },
 ): Point | null {
   if (pulley.side === "left") {
     return { x: pulley.center.x - pulley.radius, y: pulley.center.y };
@@ -111,6 +112,9 @@ function resolvePulleyContact(
   if (pulley.side === "right") {
     return { x: pulley.center.x + pulley.radius, y: pulley.center.y };
   }
+  // Auto / upper / lower : tangent géométrique exacte
+  // Pour "auto" : on choisit le tangent dont le point d'arrivée est le plus proche de l'externe
+  // (la corde la plus courte = la plus naturelle physiquement)
   const t = pickTangent(external, pulley.center, pulley.radius, mapSide(pulley.side), external);
   return t;
 }

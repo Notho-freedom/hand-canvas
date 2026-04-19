@@ -8,6 +8,8 @@ import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/componen
 import { EXAMPLES } from "@/data/examples";
 import { SchemaSchema, type Schema } from "@/types/schema";
 import { useAnimation } from "@/hooks/useAnimation";
+import { resolveSchema } from "@/engine/resolver";
+import { generateAutoAnimation } from "@/engine/autoAnimation";
 
 export default function Index() {
   const [exampleKey, setExampleKey] = useState(EXAMPLES[0].key);
@@ -31,7 +33,19 @@ export default function Index() {
     }
   }, [text]);
 
-  const animation = (schema as any)?.animation;
+  // Auto-animation : si pas définie dans le schéma, on en génère une
+  const animation = useMemo(() => {
+    if (!schema) return undefined;
+    const userAnim = (schema as any).animation;
+    if (userAnim) return userAnim;
+    try {
+      const resolved = resolveSchema(schema);
+      return generateAutoAnimation(schema, resolved);
+    } catch {
+      return undefined;
+    }
+  }, [schema]);
+
   const animControls = useAnimation(animation);
 
   const handleExample = (k: string) => {
@@ -39,7 +53,6 @@ export default function Index() {
     if (!ex) return;
     setExampleKey(k);
     setText(JSON.stringify(ex.schema, null, 2));
-    animControls.reset();
   };
 
   const onToggle = (k: "axes" | "grid" | "labels" | "anchors" | "fullscreen") => {
@@ -61,7 +74,7 @@ export default function Index() {
           <aside className="w-[40%] min-w-[320px] max-w-[640px] border-r border-border flex flex-col">
             <ResizablePanelGroup direction="vertical">
               <ResizablePanel defaultSize={40} minSize={20}>
-                <StatementEditor onGenerated={(json) => { setText(json); animControls.reset(); }} />
+                <StatementEditor onGenerated={(json) => { setText(json); }} />
               </ResizablePanel>
               <ResizableHandle withHandle />
               <ResizablePanel defaultSize={60} minSize={20}>
@@ -82,7 +95,7 @@ export default function Index() {
             showLabels={showLabels}
             showAnchors={showAnchors}
             fullscreen={fullscreen}
-            examples={EXAMPLES.map((e) => ({ key: e.key, label: e.label }))}
+            examples={EXAMPLES.map((e) => ({ key: e.key, label: e.label, category: e.category }))}
             currentExample={exampleKey}
             onToggle={onToggle}
             onExample={handleExample}
@@ -97,6 +110,7 @@ export default function Index() {
                 showLabels={showLabels}
                 showAnchors={showAnchors}
                 animState={animation ? animControls.state : undefined}
+                initiallyHidden={animation?.initiallyHidden}
               />
             ) : (
               <div className="w-full h-full flex items-center justify-center text-muted-foreground font-mono text-sm p-8">
