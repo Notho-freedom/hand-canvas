@@ -41,7 +41,7 @@ export default function SchemaCanvas({ schema, showAxes, showGrid, showLabels, s
   const L = (l: number) => worldLen(l, frame);
   const yAxisUp = frame.yAxis === "up";
 
-  const initiallyHidden = (schema as any).animation?.initiallyHidden ?? [];
+  const initiallyHidden = initiallyHiddenProp ?? (schema as any).animation?.initiallyHidden ?? [];
   const isVisible = (id: string): boolean => {
     if (!animState) return true;
     if (!initiallyHidden.includes(id)) return true;
