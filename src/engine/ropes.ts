@@ -1,6 +1,6 @@
 import type { Point } from "@/types/schema";
 import type { Resolved } from "./anchors";
-import { pickTangent, sub, dot, norm, angleDeg, snap, len } from "./geometry";
+import { pickTangent, sub, dot, norm, angleDeg, snap, len, tangentPointsToCircle } from "./geometry";
 
 export type RopeSegment =
   | { type: "line"; from: Point; to: Point }
@@ -8,17 +8,23 @@ export type RopeSegment =
 
 export type RopePath = RopeSegment[];
 
-type SideMode = "upper" | "lower" | "left" | "right" | "auto" | { tangentTo: string };
+type SideMode = "upper" | "lower" | "left" | "right" | "auto";
 
 type Waypoint =
   | { kind: "point"; p: Point }
   | { kind: "pulley"; id: string; center: Point; radius: number; side: SideMode };
 
 /**
- * Build rope path. Supports:
- *  - side "left"/"right" : tangence STRICTEMENT VERTICALE (masse pendue)
- *  - side "tangent_to:<id>" : tangente exacte vers un solide
- *  - side "auto" : choisit le côté le plus naturel selon la position relative
+ * Build rope path with **physically realistic** pulley wrapping.
+ *
+ * Règle clé : si la séquence est [P1, pulley, P2] et que P2 est EN DESSOUS du
+ * centre de la poulie, la corde doit s'enrouler par-dessus → on choisit la
+ * tangente qui garantit que l'arc passe par le HAUT du cercle.
+ *
+ * Sides :
+ *  - "left"/"right" : tangence STRICTEMENT VERTICALE (masse pendue).
+ *  - "upper"/"lower" : explicite.
+ *  - "auto" : déduit du contexte (défaut = passer par le haut).
  */
 export function buildRopePath(waypoints: Waypoint[]): RopePath {
   if (waypoints.length < 2) return [];
@@ -32,13 +38,16 @@ export function buildRopePath(waypoints: Waypoint[]): RopePath {
     if (A.kind === "point" && B.kind === "point") continue;
 
     if (A.kind === "point" && B.kind === "pulley") {
-      const t = resolvePulleyContact(A.p, B);
+      // Pour résoudre "auto", on a besoin de connaître l'autre attache (suivante de B)
+      const next = waypoints[i + 2];
+      const t = resolvePulleyContact(A.p, B, next);
       if (t) {
         contacts[i + 1].in = t;
         contacts[i + 1].angIn = angleDeg(sub(t, B.center));
       }
     } else if (A.kind === "pulley" && B.kind === "point") {
-      const t = resolvePulleyContact(B.p, A);
+      const prev = waypoints[i - 1];
+      const t = resolvePulleyContact(B.p, A, prev);
       if (t) {
         contacts[i].out = t;
         contacts[i].angOut = angleDeg(sub(t, A.center));
@@ -94,17 +103,24 @@ export function buildRopePath(waypoints: Waypoint[]): RopePath {
 }
 
 function mapSide(s: SideMode): "upper" | "lower" | "auto" {
-  if (typeof s === "object") return "auto";
   if (s === "left" || s === "right") return "auto";
   return s;
 }
 
 /**
- * For sides "left"/"right": tangent point at horizontal extreme → rope strictly vertical.
+ * Choisit le point de contact sur la poulie.
+ *  - side "left"/"right" : tangente strictement verticale (côté gauche/droit du cercle).
+ *  - side "upper"/"lower" : tangente du dessus/dessous.
+ *  - side "auto" : enroulement physiquement correct.
+ *      Règle : la corde doit s'enrouler PAR LE HAUT par défaut.
+ *      Si l'AUTRE attache (`other`) est connue et est sous la poulie, on choisit
+ *      la tangente sur l'hémisphère opposé à `other` → la corde passe par-dessus.
+ *      Sinon, on choisit la tangente du HAUT.
  */
 function resolvePulleyContact(
   external: Point,
   pulley: { center: Point; radius: number; side: SideMode },
+  other?: Waypoint,
 ): Point | null {
   if (pulley.side === "left") {
     return { x: pulley.center.x - pulley.radius, y: pulley.center.y };
@@ -112,11 +128,51 @@ function resolvePulleyContact(
   if (pulley.side === "right") {
     return { x: pulley.center.x + pulley.radius, y: pulley.center.y };
   }
-  // Auto / upper / lower : tangent géométrique exacte
-  // Pour "auto" : on choisit le tangent dont le point d'arrivée est le plus proche de l'externe
-  // (la corde la plus courte = la plus naturelle physiquement)
-  const t = pickTangent(external, pulley.center, pulley.radius, mapSide(pulley.side), external);
-  return t;
+  if (pulley.side === "upper") {
+    const ts = tangentPointsToCircle(external, pulley.center, pulley.radius);
+    if (!ts) return null;
+    return ts[0].y >= ts[1].y ? ts[0] : ts[1];
+  }
+  if (pulley.side === "lower") {
+    const ts = tangentPointsToCircle(external, pulley.center, pulley.radius);
+    if (!ts) return null;
+    return ts[0].y <= ts[1].y ? ts[0] : ts[1];
+  }
+
+  // === AUTO ===
+  // On veut la tangente qui produit un enroulement par le haut quand l'autre
+  // attache pend en dessous. Stratégie : choisir la tangente dont la position
+  // SUR LE CERCLE est la PLUS HAUTE possible compatible avec une corde tendue
+  // entre `external` et `pulley`, sauf si l'autre côté force "lower".
+  const ts = tangentPointsToCircle(external, pulley.center, pulley.radius);
+  if (!ts) return null;
+  const [p1, p2] = ts;
+
+  // Déterminer si l'autre attache est sous la poulie (Δy < 0 en math up)
+  let otherIsBelow = true;
+  let otherIsAbove = false;
+  let otherSide: SideMode | null = null;
+  if (other) {
+    const otherCenter = other.kind === "point" ? other.p : other.center;
+    otherIsBelow = otherCenter.y < pulley.center.y;
+    otherIsAbove = otherCenter.y > pulley.center.y;
+    if (other.kind === "pulley") otherSide = other.side;
+  }
+
+  // Si l'autre attache impose une verticale (side=left/right) → la corde sort
+  // verticalement vers le bas/le haut, et l'enroulement doit passer par le HAUT.
+  const otherForcesVertical = otherSide === "left" || otherSide === "right";
+
+  if (otherIsBelow || otherForcesVertical) {
+    // Enroulement par le haut → choisir la tangente la plus haute (max y).
+    return p1.y >= p2.y ? p1 : p2;
+  }
+  if (otherIsAbove) {
+    // Enroulement par le bas
+    return p1.y <= p2.y ? p1 : p2;
+  }
+  // Cas symétrique : choisir la plus haute par défaut
+  return p1.y >= p2.y ? p1 : p2;
 }
 
 function shortestSweep(startDeg: number, endDeg: number): 0 | 1 {

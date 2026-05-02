@@ -236,17 +236,39 @@ export const ConstraintSchema = z.discriminatedUnion("type", [
 export type Constraint = z.infer<typeof ConstraintSchema>;
 
 // ─── Animation ──────────────────────────────────────────────────────────────
+export const AnimateAxisSchema = z.union([
+  z.literal("x"),
+  z.literal("y"),
+  z.object({ dx: z.number(), dy: z.number() }),
+]);
+
+export const AnimateSpecSchema = z.object({
+  id: z.string(),
+  // Existing slide-along-curve mode
+  along: z.string().optional(),
+  from: z.number().optional(),
+  to: z.number().optional(),
+  duration: z.number().positive().optional(),
+  // NEW : modes physiques
+  mode: z.enum(["slide", "translate", "oscillate", "rotate"]).optional(),
+  axis: AnimateAxisSchema.optional(),
+  amplitude: z.number().optional(),
+  frequency: z.number().positive().optional(),
+  cycles: z.number().positive().optional(),
+  angleFrom: z.number().optional(),
+  angleTo: z.number().optional(),
+  pivot: z.union([
+    z.object({ x: z.number(), y: z.number() }),
+    z.object({ ref: z.string() }),
+  ]).optional(),
+});
+export type AnimateSpec = z.infer<typeof AnimateSpecSchema>;
+
 export const AnimationStepSchema = z.object({
   at: z.number().nonnegative(),
   show: z.array(z.string()).optional(),
   hide: z.array(z.string()).optional(),
-  animate: z.object({
-    id: z.string(),
-    along: z.string().optional(),
-    from: z.number().optional(),
-    to: z.number().optional(),
-    duration: z.number().positive().optional(),
-  }).optional(),
+  animate: AnimateSpecSchema.optional(),
 });
 export const AnimationSchema = z.object({
   duration: z.number().positive().default(6),

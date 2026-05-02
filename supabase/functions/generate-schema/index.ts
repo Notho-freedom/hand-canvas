@@ -52,15 +52,17 @@ Tu génères un objet JSON conforme au schéma. RENDS UNIQUEMENT du JSON valide 
 
 ## RÈGLES STRICTES (systèmes combinés)
 
-### A. Cordes & poulies
-- Masse pendue VERTICALEMENT sous une poulie → \`side:"left"\` ou \`side:"right"\` (corde stricte verticale).
-- Atwood (2 masses + poulie au-dessus) → \`pulley_rope_system\` + blocs DÉCALÉS horizontalement (un sous chaque côté de la poulie).
-- Bloc sur plan incliné relié à une poulie au sommet : la corde sort de \`face:"right"\` (face haute le long du plan, pas \`face:"top"\`), wrap \`side:"auto"\`.
+### A. Cordes & poulies — TOUJOURS PAR LE HAUT
+- La corde s'enroule **TOUJOURS PAR LE DESSUS** d'une poulie sauf indication contraire explicite.
+- Masse pendue VERTICALEMENT sous une poulie → \`side:"left"\` ou \`side:"right"\` (corde verticale stricte).
+- Atwood (2 masses + poulie au-dessus) → utiliser \`pulley_rope_system\` + 2 blocs DÉCALÉS horizontalement (un sous chaque côté de la poulie).
+- Poulie au sommet d'un plan incliné : la corde sort de \`face:"right"\` (face haute le long du plan, jamais \`face:"top"\`), wrap \`side:"auto"\` (le moteur la fait passer par-dessus).
+- Poulie au bord d'une table : bloc sur la table → corde de \`face:"right"\` (vers la poulie), wrap \`side:"auto"\` ; masse pendue → wrap \`side:"right"\` ou \`"left"\` puis \`face:"top"\` du bloc, ALIGNÉ verticalement (bloc.at.x = poulie.at.x ± rayon).
 
 ### B. Ressorts
-- Ressort horizontal mur↔bloc : \`face:"left"\` ou \`face:"right"\` du bloc + ancrage \`curve:"surface", t:0.5\` du mur, ALIGNER mur.height = bloc.h, et bloc.at.y = 0. Toujours ajouter \`{type:"horizontal",object:"ressort"}\`.
-- Ressort vertical : utiliser \`face:"top"\` ou \`face:"bottom"\`. Ajouter \`{type:"vertical",object:"ressort"}\`.
-- Bloc entre 2 ressorts : un ressort à gauche (\`face:"left"\` du bloc), un ressort à droite (\`face:"right"\`).
+- Ressort horizontal mur↔bloc : \`face:"left"\` ou \`face:"right"\` du bloc + ancrage \`curve:"surface", t:0.5\` du mur. Ajouter \`{type:"horizontal",object:"ressort"}\`.
+- Ressort vertical : \`face:"top"\` ou \`face:"bottom"\`. Ajouter \`{type:"vertical",object:"ressort"}\`.
+- Bloc entre 2 ressorts : un à gauche (\`face:"left"\`), un à droite (\`face:"right"\`).
 
 ### C. Plan incliné
 - Bloc sur incline : \`rotation:"auto"\` + anchor \`curve:"surface"\`.

@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import SchemaCanvas from "@/components/schema/SchemaCanvas";
 import JsonEditor from "@/components/schema/JsonEditor";
 import Toolbar from "@/components/schema/Toolbar";
@@ -10,15 +11,34 @@ import { SchemaSchema, type Schema } from "@/types/schema";
 import { useAnimation } from "@/hooks/useAnimation";
 import { resolveSchema } from "@/engine/resolver";
 import { generateAutoAnimation } from "@/engine/autoAnimation";
+import { Button } from "@/components/ui/button";
+import { ArrowLeft, Atom } from "lucide-react";
 
-export default function Index() {
-  const [exampleKey, setExampleKey] = useState(EXAMPLES[0].key);
-  const [text, setText] = useState(() => JSON.stringify(EXAMPLES[0].schema, null, 2));
+export default function Studio() {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const initial = (location.state as any) ?? {};
+
+  const initialKey = initial.exampleKey && EXAMPLES.find((e) => e.key === initial.exampleKey)
+    ? initial.exampleKey
+    : EXAMPLES[0].key;
+
+  const [exampleKey, setExampleKey] = useState<string>(initialKey);
+  const [text, setText] = useState<string>(() => {
+    if (typeof initial.json === "string") return initial.json;
+    const ex = EXAMPLES.find((e) => e.key === initialKey) ?? EXAMPLES[0];
+    return JSON.stringify(ex.schema, null, 2);
+  });
   const [showAxes, setShowAxes] = useState(true);
   const [showGrid, setShowGrid] = useState(true);
   const [showLabels, setShowLabels] = useState(true);
   const [showAnchors, setShowAnchors] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
+
+  useEffect(() => {
+    document.body.dataset.route = "studio";
+    return () => { delete document.body.dataset.route; };
+  }, []);
 
   const { schema, error } = useMemo<{ schema: Schema | null; error: string | null }>(() => {
     try {
@@ -33,7 +53,6 @@ export default function Index() {
     }
   }, [text]);
 
-  // Auto-animation : si pas définie dans le schéma, on en génère une
   const animation = useMemo(() => {
     if (!schema) return undefined;
     const userAnim = (schema as any).animation;
@@ -66,15 +85,23 @@ export default function Index() {
   return (
     <div className="w-screen h-screen flex flex-col bg-background text-foreground overflow-hidden">
       <header className="px-4 py-2 border-b border-border flex items-center justify-between">
-        <h1 className="text-sm font-mono font-semibold tracking-tight">Madox · Moteur de schémas physiques</h1>
-        <span className="text-xs font-mono text-muted-foreground">Énoncé → IA → JSON → schéma précis</span>
+        <div className="flex items-center gap-3">
+          <Button variant="ghost" size="sm" onClick={() => navigate("/")} className="font-mono text-xs h-7 px-2">
+            <ArrowLeft className="h-3.5 w-3.5 mr-1.5" /> Retour
+          </Button>
+          <div className="flex items-center gap-1.5">
+            <Atom className="h-4 w-4 text-primary" />
+            <h1 className="text-sm font-mono font-semibold tracking-tight">Madox · Studio</h1>
+          </div>
+        </div>
+        <span className="text-xs font-mono text-muted-foreground hidden md:inline">Énoncé → IA → JSON → schéma précis</span>
       </header>
       <div className="flex-1 flex min-h-0">
         {!fullscreen && (
           <aside className="w-[40%] min-w-[320px] max-w-[640px] border-r border-border flex flex-col">
             <ResizablePanelGroup direction="vertical">
               <ResizablePanel defaultSize={40} minSize={20}>
-                <StatementEditor onGenerated={(json) => { setText(json); }} />
+                <StatementEditor onGenerated={(json) => { setText(json); }} initialStatement={initial.statement} />
               </ResizablePanel>
               <ResizableHandle withHandle />
               <ResizablePanel defaultSize={60} minSize={20}>
