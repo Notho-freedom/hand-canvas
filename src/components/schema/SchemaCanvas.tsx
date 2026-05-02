@@ -23,11 +23,47 @@ export default function SchemaCanvas({ schema, showAxes, showGrid, showLabels, s
     if (!animState || animState.overrides.size === 0) return schema;
     const components = schema.components.map((c) => {
       const ov = animState.overrides.get(c.id);
-      if (!ov || typeof ov.tValue !== "number" || !ov.along) return c;
-      const [targetId, curveName] = ov.along.split(".");
-      // Override anchor with curve(t)
-      const newAnchor = { kind: "curve" as const, id: targetId, curve: curveName, t: ov.tValue };
-      return { ...c, anchor: newAnchor } as any;
+      if (!ov) return c;
+
+      // 1) slide along curve : remplace l'anchor
+      if (typeof ov.tValue === "number" && ov.along) {
+        const [targetId, curveName] = ov.along.split(".");
+        const newAnchor = { kind: "curve" as const, id: targetId, curve: curveName, t: ov.tValue };
+        return { ...c, anchor: newAnchor } as any;
+      }
+
+      // 2) translate : décale at/anchor d'un offset (dx, dy)
+      if ((ov.dx !== undefined || ov.dy !== undefined)) {
+        const dx = ov.dx ?? 0;
+        const dy = ov.dy ?? 0;
+        const cc: any = c;
+        const target = cc.at ?? cc.anchor;
+        if (target && typeof target === "object") {
+          if (typeof target.x === "number" && typeof target.y === "number") {
+            const next = { ...target, x: target.x + dx, y: target.y + dy };
+            return cc.at ? { ...cc, at: next } : { ...cc, anchor: next };
+          }
+          // ref-based : on ajoute/écrase un offset cumulatif
+          const prevOff = target.offset ?? { x: 0, y: 0 };
+          const newOff = { x: prevOff.x + dx, y: prevOff.y + dy };
+          const next = { ...target, offset: newOff };
+          return cc.at ? { ...cc, at: next } : { ...cc, anchor: next };
+        }
+        return c;
+      }
+
+      // 3) rotate : pour pendule, on override params.angle
+      if (typeof ov.angle === "number" && c.type === "pendulum") {
+        const cc: any = c;
+        return { ...cc, params: { ...cc.params, angle: ov.angle } };
+      }
+      // rotate pour bloc : ajuste rotation
+      if (typeof ov.angle === "number" && c.type === "block") {
+        const cc: any = c;
+        return { ...cc, rotation: ov.angle };
+      }
+
+      return c;
     });
     return { ...schema, components };
   }, [schema, animState?.overrides]);
