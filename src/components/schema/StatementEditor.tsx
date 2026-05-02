@@ -7,11 +7,13 @@ import { toast } from "sonner";
 
 interface Props {
   onGenerated: (json: string) => void;
+  initialStatement?: string;
 }
 
-export default function StatementEditor({ onGenerated }: Props) {
+export default function StatementEditor({ onGenerated, initialStatement }: Props) {
   const [text, setText] = useState(
-    "Un bloc de masse 5 kg est posé sur un plan incliné formant un angle de 30° avec l'horizontale. Représenter le bloc, le plan, le sol, le poids, la réaction normale, le frottement, le repère local et la projection du poids sur les axes du repère local.",
+    initialStatement ??
+      "Un bloc de masse 5 kg est posé sur un plan incliné formant un angle de 30° avec l'horizontale. Représenter le bloc, le plan, le sol, le poids, la réaction normale, le frottement, le repère local et la projection du poids sur les axes du repère local.",
   );
   const [loading, setLoading] = useState(false);
 
