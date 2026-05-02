@@ -63,6 +63,23 @@
 
   body {
     @apply bg-background text-foreground;
+  }
+
+  /* The studio app is a fixed-viewport editor; lock scroll only on its route */
+  body[data-route="studio"] {
     overflow: hidden;
+  }
+}
+
+@layer utilities {
+  .grid-bg {
+    background-image:
+      linear-gradient(hsl(var(--grid-line)) 1px, transparent 1px),
+      linear-gradient(90deg, hsl(var(--grid-line)) 1px, transparent 1px);
+    background-size: 32px 32px;
+    background-position: -1px -1px;
+  }
+  .text-glow-cyan {
+    text-shadow: 0 0 24px hsl(var(--neon-cyan) / 0.4);
   }
 }
